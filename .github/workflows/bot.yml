@@ -1,0 +1,42 @@
+name: Traffic Bot Runner
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-traffic-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pipx install proxy-scraper-cli
+          
+      - name: Fetch free proxies
+        run: |
+          proxy-scraper --want 50 --https-only --output-dir ./proxies || echo "Proxy fetch failed, continuing..."
+          
+      - name: Run Scrapy spider
+        env:
+          ZYTE_API_KEY: ${{ secrets.ZYTE_API_KEY }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+          TARGET_URL: ${{ secrets.TARGET_URL }}
+        run: |
+          scrapy crawl traffic_bot -a target_url=$TARGET_URL -O results.json
+          
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: traffic-bot-results
+          path: results.json
