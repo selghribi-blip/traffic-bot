@@ -6,8 +6,8 @@ class TrafficSpider(scrapy.Spider):
     name = 'traffic_bot'
     custom_settings = {
         'DOWNLOADER_MIDDLEWARES': {
-            'traffic_bot.middlewares.proxy_rotator.FreeProxyRotatorMiddleware': 543,
-            'traffic_bot.middlewares.zyte_middleware.ZyteMiddleware': 544,
+            'middlewares.proxy_rotator.FreeProxyRotatorMiddleware': 543,
+            'middlewares.zyte_middleware.ZyteMiddleware': 544,
         },
         'FREE_PROXY_LIST_URL': 'https://raw.githubusercontent.com/xyzs996/free-proxy-health-list/main/proxies/all/data.txt',
         'ZYTE_API_KEY': '${ZYTE_API_KEY}',
