@@ -23,7 +23,7 @@ jobs:
           
       - name: Fetch free proxies
         run: |
-          proxy-scraper --want 50 --https-only --output-dir ./proxies || echo "Proxy fetch failed, continuing..."
+          proxy-scraper --want 50 --https-only -o proxies.txt || echo "Proxy fetch failed, continuing..."
           
       - name: Run Scrapy spider
         env:
