@@ -5,6 +5,9 @@ from datetime import datetime
 class TrafficSpider(scrapy.Spider):
     name = 'traffic_bot'
     custom_settings = {
+        'ADDONS': {
+            'scrapy_zyte_api.Addon': 500,
+        },
         'DOWNLOADER_MIDDLEWARES': {
             'middlewares.proxy_rotator.FreeProxyRotatorMiddleware': 543,
             'middlewares.zyte_middleware.ZyteMiddleware': 544,

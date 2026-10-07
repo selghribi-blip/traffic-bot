@@ -1,5 +1,3 @@
-from scrapy_zyte_api import ZyteAPIDownloadHandler
-
 class ZyteMiddleware:
     @classmethod
     def from_crawler(cls, crawler):
