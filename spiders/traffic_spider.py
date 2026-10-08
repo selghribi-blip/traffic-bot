@@ -1,6 +1,6 @@
 import os
 import random
-import scrapy
+import scrapy  # type: ignore[reportMissingImports]
 from datetime import datetime
 
 class TrafficSpider(scrapy.Spider):
