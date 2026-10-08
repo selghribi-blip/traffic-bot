@@ -180,7 +180,15 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+# --- الأسطر الجديدة التي تم إضافتها لحل المشكلة ---
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
+      - name: Install required Python packages
+        run: pip install pymongo
+      # ------------------------------------------------
       - name: Aggregate and summarize
         run: |
           echo "=== TRAFFIC BOT RUN SUMMARY ==="
