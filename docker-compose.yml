@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  # MongoDB for local development
+  mongodb:
+    image: mongo:7.0
+    container_name: traffic-bot-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+      MONGO_INITDB_DATABASE: traffic_bot
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MongoDB Express for UI
+  mongo-express:
+    image: mongo-express:1.0
+    container_name: traffic-bot-mongo-express
+    ports:
+      - "8081:8081"
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: admin
+      ME_CONFIG_MONGODB_ADMINPASSWORD: password
+      ME_CONFIG_MONGODB_URL: mongodb://admin:password@mongodb:27017/
+      ME_CONFIG_BASICAUTH: "false"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+
+  # Traffic Bot Scrapy
+  traffic-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: traffic-bot-scrapy
+    environment:
+      - ZYTE_API_KEY=${ZYTE_API_KEY}
+      - MONGODB_URI=mongodb://admin:password@mongodb:27017/traffic_bot?authSource=admin
+      - TARGET_URL=${TARGET_URL:-https://www.forjo.tech/}
+      - LOG_LEVEL=INFO
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    volumes:
+      - ./results:/app/results
+      - ./logs:/app/logs
+    command: >
+      sh -c "
+        scrapy crawl traffic_bot -a target_url=${TARGET_URL:-https://www.forjo.tech/} -O results/scrapy_results.json
+      "
+
+  # Traffic Bot BrowserStack (Local Browser)
+  traffic-bot-browser:
+    build:
+      context: .
+      dockerfile: Dockerfile.browser
+    container_name: traffic-bot-browser
+    environment:
+      - MONGODB_URI=mongodb://admin:password@mongodb:27017/traffic_bot?authSource=admin
+      - TARGET_URL=${TARGET_URL:-https://www.forjo.tech/}
+      - BROWSERSTACK_USERNAME=${BROWSERSTACK_USERNAME}
+      - BROWSERSTACK_ACCESS_KEY=${BROWSERSTACK_ACCESS_KEY}
+      - LOG_LEVEL=INFO
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    volumes:
+      - ./results:/app/results
+      - ./logs:/app/logs
+    shm_size: 2g
+    command: >
+      sh -c "
+        scrapy crawl browserstack_bot -a target_url=${TARGET_URL:-https://www.forjo.tech/} -a use_browserstack=false -O results/browser_results.json
+      "
+
+volumes:
+  mongodb_data:
+
+networks:
+  default:
+    name: traffic-bot-network

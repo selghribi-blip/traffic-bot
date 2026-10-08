@@ -1,0 +1,62 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies including Chrome
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libc-dev \
+    libpq-dev \
+    curl \
+    wget \
+    gnupg \
+    unzip \
+    xvfb \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Chrome
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install ChromeDriver
+RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d. -f1) \
+    && DRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION}") \
+    && wget -q "https://chromedriver.storage.googleapis.com/${DRIVER_VERSION}/chromedriver_linux64.zip" \
+    && unzip chromedriver_linux64.zip -d /usr/local/bin/ \
+    && rm chromedriver_linux64.zip \
+    && chmod +x /usr/local/bin/chromedriver
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy project
+COPY . .
+
+# Create directories
+RUN mkdir -p results logs
+
+# Set display for headless Chrome
+ENV DISPLAY=:99
+
+# Run as non-root
+RUN useradd -m -u 1000 scrapy && chown -R scrapy:scrapy /app
+USER scrapy
+
+CMD ["scrapy", "crawl", "browserstack_bot", "-a", "use_browserstack=false"]

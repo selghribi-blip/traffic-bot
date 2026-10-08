@@ -1,0 +1,65 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Scrapy
+.scrapy/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# MongoDB
+*.json
+!*.json.example
+
+# Artifacts
+results/
+artifacts/
+*.png
+*.jpg
+*.jpeg
+
+# BrowserStack
+browserstack.log
+
+# Proxy files
+proxies.txt
+proxy_*.txt
+
+# Coverage
+htmlcov/
+.coverage
+coverage.xml
+
+# Testing
+.pytest_cache/
+.tox/
+
+# Distribution
+dist/
+build/
+*.egg-info/
+
+# Local development
+local_settings.py
+settings_local.py
