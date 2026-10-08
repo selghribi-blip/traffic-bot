@@ -47,35 +47,36 @@ jobs:
       
       - name: Fetch free proxies
         run: |
-          python -c "
-import requests
-import re
+          cat << 'EOF' > fetch_proxies.py
+          import requests
+          import re
 
-sources = [
-    'https://raw.githubusercontent.com/xyzs996/free-proxy-health-list/main/proxies/all/data.txt',
-    'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt',
-    'https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt',
-    'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt',
-    'https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt',
-]
+          sources = [
+              'https://raw.githubusercontent.com/xyzs996/free-proxy-health-list/main/proxies/all/data.txt',
+              'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt',
+              'https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt',
+              'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt',
+              'https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt',
+          ]
 
-all_proxies = set()
-for url in sources:
-    try:
-        r = requests.get(url, timeout=15)
-        if r.status_code == 200:
-            for line in r.text.strip().split('\n'):
-                line = line.strip()
-                if line and re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{1,5}$', line):
-                    all_proxies.add(line)
-    except Exception as e:
-        print(f'Failed: {url} - {e}')
+          all_proxies = set()
+          for url in sources:
+              try:
+                  r = requests.get(url, timeout=15)
+                  if r.status_code == 200:
+                      for line in r.text.strip().split('\n'):
+                          line = line.strip()
+                          if line and re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{1,5}$', line):
+                              all_proxies.add(line)
+              except Exception as e:
+                  print(f'Failed: {url} - {e}')
 
-with open('proxies.txt', 'w') as f:
-    for p in all_proxies:
-        f.write(p + '\n')
-print(f'Total proxies: {len(all_proxies)}')
-          "
+          with open('proxies.txt', 'w') as f:
+              for p in all_proxies:
+                  f.write(p + '\n')
+          print(f'Total proxies: {len(all_proxies)}')
+          EOF
+          python fetch_proxies.py
       
       - name: Run Scrapy spider
         env:
@@ -188,25 +189,27 @@ print(f'Total proxies: {len(all_proxies)}')
           echo "Trigger: ${{ github.event_name }}"
           echo ""
           
+          cat << 'EOF' > aggregate.py
+          import sys, json
+          data = [json.loads(line) for line in sys.stdin if line.strip()]
+          visits = [d for d in data if d.get('type') == 'visit' or d.get('type') == 'browserstack_visit']
+          ad_clicks = [d for d in data if d.get('type') == 'ad_click']
+          form_submits = [d for d in data if d.get('type') == 'form_submit']
+
+          total_visits = len(visits)
+          total_ads = sum(v.get('ads_clicked', 0) for v in visits) + len(ad_clicks)
+          total_forms = sum(v.get('forms_filled', 0) for v in visits) + len(form_submits)
+
+          print(f'Visits: {total_visits}')
+          print(f'Ads Clicked: {total_ads}')
+          print(f'Forms Filled: {total_forms}')
+          print(f'Status: {visits[0].get("status", "N/A") if visits else "N/A"}')
+          EOF
+          
           for file in artifacts/*/*.json; do
             if [ -f "$file" ]; then
               echo "--- $(basename $file) ---"
-              cat "$file" | python3 -c "
-import sys, json
-data = [json.loads(line) for line in sys.stdin if line.strip()]
-visits = [d for d in data if d.get('type') == 'visit' or d.get('type') == 'browserstack_visit']
-ad_clicks = [d for d in data if d.get('type') == 'ad_click']
-form_submits = [d for d in data if d.get('type') == 'form_submit']
-
-total_visits = len(visits)
-total_ads = sum(v.get('ads_clicked', 0) for v in visits) + len(ad_clicks)
-total_forms = sum(v.get('forms_filled', 0) for v in visits) + len(form_submits)
-
-print(f'Visits: {total_visits}')
-print(f'Ads Clicked: {total_ads}')
-print(f'Forms Filled: {total_forms}')
-print(f'Status: {visits[0].get(\"status\", \"N/A\") if visits else \"N/A\"}')
-              "
+              cat "$file" | python3 aggregate.py
             fi
           done
       
@@ -215,48 +218,49 @@ print(f'Status: {visits[0].get(\"status\", \"N/A\") if visits else \"N/A\"}')
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
         run: |
-          python3 -c "
-import os
-import json
-from pymongo import MongoClient
-from datetime import datetime
+          cat << 'EOF' > mongo_log.py
+          import os
+          import json
+          from pymongo import MongoClient
+          from datetime import datetime
 
-uri = os.getenv('MONGODB_URI')
-if uri:
-    client = MongoClient(uri)
-    db = client['traffic_bot']
-    sessions = db['sessions']
-    
-    total_visits = 0
-    total_ads = 0
-    total_forms = 0
-    
-    for root, dirs, files in os.walk('artifacts'):
-        for file in files:
-            if file.endswith('.json'):
-                with open(os.path.join(root, file)) as f:
-                    for line in f:
-                        try:
-                            d = json.loads(line)
-                            if d.get('type') in ['visit', 'browserstack_visit']:
-                                total_visits += 1
-                                total_ads += d.get('ads_clicked', 0)
-                                total_forms += d.get('forms_filled', 0)
-                        except:
-                            pass
-    
-    sessions.insert_one({
-        'run_id': '${{ github.run_id }}',
-        'run_number': ${{ github.run_number }},
-        'trigger': '${{ github.event_name }}',
-        'timestamp': datetime.utcnow(),
-        'total_visits': total_visits,
-        'total_ads_clicked': total_ads,
-        'total_forms_filled': total_forms,
-        'status': 'completed',
-    })
-    print(f'Logged session to MongoDB: {total_visits} visits, {total_ads} ads, {total_forms} forms')
-          "
+          uri = os.getenv('MONGODB_URI')
+          if uri:
+              client = MongoClient(uri)
+              db = client['traffic_bot']
+              sessions = db['sessions']
+              
+              total_visits = 0
+              total_ads = 0
+              total_forms = 0
+              
+              for root, dirs, files in os.walk('artifacts'):
+                  for file in files:
+                      if file.endswith('.json'):
+                          with open(os.path.join(root, file)) as f:
+                              for line in f:
+                                  try:
+                                      d = json.loads(line)
+                                      if d.get('type') in ['visit', 'browserstack_visit']:
+                                          total_visits += 1
+                                          total_ads += d.get('ads_clicked', 0)
+                                          total_forms += d.get('forms_filled', 0)
+                                  except:
+                                      pass
+              
+              sessions.insert_one({
+                  'run_id': '${{ github.run_id }}',
+                  'run_number': ${{ github.run_number }},
+                  'trigger': '${{ github.event_name }}',
+                  'timestamp': datetime.utcnow(),
+                  'total_visits': total_visits,
+                  'total_ads_clicked': total_ads,
+                  'total_forms_filled': total_forms,
+                  'status': 'completed',
+              })
+              print(f'Logged session to MongoDB: {total_visits} visits, {total_ads} ads, {total_forms} forms')
+          EOF
+          python3 mongo_log.py
 
   cleanup:
     name: Cleanup Old Artifacts
