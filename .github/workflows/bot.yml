@@ -180,7 +180,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-      
+
       - name: Aggregate and summarize
         run: |
           echo "=== TRAFFIC BOT RUN SUMMARY ==="
@@ -188,31 +188,42 @@ jobs:
           echo "Run Number: ${{ github.run_number }}"
           echo "Trigger: ${{ github.event_name }}"
           echo ""
-          
+
           cat << 'EOF' > aggregate.py
           import sys, json
-          data = [json.loads(line) for line in sys.stdin if line.strip()]
-          visits = [d for d in data if d.get('type') == 'visit' or d.get('type') == 'browserstack_visit']
-          ad_clicks = [d for d in data if d.get('type') == 'ad_click']
-          form_submits = [d for d in data if d.get('type') == 'form_submit']
 
-          total_visits = len(visits)
-          total_ads = sum(v.get('ads_clicked', 0) for v in visits) + len(ad_clicks)
-          total_forms = sum(v.get('forms_filled', 0) for v in visits) + len(form_submits)
+          try:
+              content = sys.stdin.read().strip()
+              if not content:
+                  data = []
+              elif content.startswith('['):
+                  data = json.loads(content)
+              else:
+                  data = [json.loads(line) for line in content.split('\n') if line.strip()]
 
-          print(f'Visits: {total_visits}')
-          print(f'Ads Clicked: {total_ads}')
-          print(f'Forms Filled: {total_forms}')
-          print(f'Status: {visits[0].get("status", "N/A") if visits else "N/A"}')
+              visits = [d for d in data if d.get('type') in ['visit', 'browserstack_visit']]
+              ad_clicks = [d for d in data if d.get('type') == 'ad_click']
+              form_submits = [d for d in data if d.get('type') == 'form_submit']
+
+              total_visits = len(visits)
+              total_ads = sum(v.get('ads_clicked', 0) for v in visits) + len(ad_clicks)
+              total_forms = sum(v.get('forms_filled', 0) for v in visits) + len(form_submits)
+
+              print(f'Visits: {total_visits}')
+              print(f'Ads Clicked: {total_ads}')
+              print(f'Forms Filled: {total_forms}')
+              print(f'Status: {visits[0].get("status", "N/A") if visits else "N/A"}')
+          except Exception as e:
+              print(f"Notice: Could not parse results ({e})")
           EOF
-          
+
           for file in artifacts/*/*.json; do
             if [ -f "$file" ]; then
               echo "--- $(basename $file) ---"
               cat "$file" | python3 aggregate.py
             fi
           done
-      
+
       - name: Send summary to MongoDB (optional)
         if: env.MONGODB_URI != ''
         env:
@@ -226,39 +237,49 @@ jobs:
 
           uri = os.getenv('MONGODB_URI')
           if uri:
-              client = MongoClient(uri)
-              db = client['traffic_bot']
-              sessions = db['sessions']
-              
-              total_visits = 0
-              total_ads = 0
-              total_forms = 0
-              
-              for root, dirs, files in os.walk('artifacts'):
-                  for file in files:
-                      if file.endswith('.json'):
-                          with open(os.path.join(root, file)) as f:
-                              for line in f:
-                                  try:
-                                      d = json.loads(line)
-                                      if d.get('type') in ['visit', 'browserstack_visit']:
-                                          total_visits += 1
-                                          total_ads += d.get('ads_clicked', 0)
-                                          total_forms += d.get('forms_filled', 0)
-                                  except:
-                                      pass
-              
-              sessions.insert_one({
-                  'run_id': '${{ github.run_id }}',
-                  'run_number': ${{ github.run_number }},
-                  'trigger': '${{ github.event_name }}',
-                  'timestamp': datetime.utcnow(),
-                  'total_visits': total_visits,
-                  'total_ads_clicked': total_ads,
-                  'total_forms_filled': total_forms,
-                  'status': 'completed',
-              })
-              print(f'Logged session to MongoDB: {total_visits} visits, {total_ads} ads, {total_forms} forms')
+              try:
+                  client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+                  db = client['traffic_bot']
+                  sessions = db['sessions']
+
+                  total_visits = 0
+                  total_ads = 0
+                  total_forms = 0
+
+                  for root, dirs, files in os.walk('artifacts'):
+                      for file in files:
+                          if file.endswith('.json'):
+                              try:
+                                  with open(os.path.join(root, file)) as f:
+                                      content = f.read().strip()
+                                      if not content: continue
+
+                                      if content.startswith('['):
+                                          data = json.loads(content)
+                                      else:
+                                          data = [json.loads(line) for line in content.split('\n') if line.strip()]
+
+                                      for d in data:
+                                          if d.get('type') in ['visit', 'browserstack_visit']:
+                                              total_visits += 1
+                                              total_ads += d.get('ads_clicked', 0)
+                                              total_forms += d.get('forms_filled', 0)
+                              except Exception as e:
+                                  pass
+
+                  sessions.insert_one({
+                      'run_id': '${{ github.run_id }}',
+                      'run_number': ${{ github.run_number }},
+                      'trigger': '${{ github.event_name }}',
+                      'timestamp': datetime.utcnow(),
+                      'total_visits': total_visits,
+                      'total_ads_clicked': total_ads,
+                      'total_forms_filled': total_forms,
+                      'status': 'completed',
+                  })
+                  print(f'Logged session to MongoDB: {total_visits} visits, {total_ads} ads, {total_forms} forms')
+              except Exception as e:
+                  print(f"MongoDB Notice: {e}")
           EOF
           python3 mongo_log.py
 
