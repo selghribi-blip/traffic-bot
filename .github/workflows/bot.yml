@@ -58,14 +58,18 @@ jobs:
       - name: Install Python deps
         run: |
           pip install --upgrade pip
-          pip install --no-cache-dir -r requirements.txt -c constraints.txt
+          pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1'
+          pip install --no-cache-dir -r requirements.txt
           echo "=== Installed versions ==="
-          pip show w3lib scrapy | grep -E "Name|Version"
+          pip show Twisted w3lib scrapy | grep -E "Name|Version"
 
-      - name: Verify w3lib compatibility
+      - name: Verify dependencies
         run: |
-          python -c "import w3lib; print('w3lib version:', w3lib.__version__)"
+          python -c "import twisted; print('Twisted:', twisted.__version__)"
+          python -c "from twisted.internet._sslverify import _setAcceptableProtocols; print('✅ _setAcceptableProtocols OK')"
+          python -c "import w3lib; print('w3lib:', w3lib.__version__)"
           python -c "from w3lib.url import _safe_chars; print('✅ _safe_chars OK')"
+          python -c "import scrapy; print('Scrapy:', scrapy.__version__)"
 
       - name: Debug env
         env:
@@ -73,12 +77,10 @@ jobs:
         run: |
           echo "TARGET_URL length: ${#TARGET_URL}"
           echo "TARGET_URL value: $TARGET_URL"
-          echo "ZYTE set: ${{ secrets.ZYTE_API_KEY != '' }}"
           echo "MONGODB set: ${{ secrets.MONGODB_URI != '' }}"
 
       - name: Run Scrapy spider
         env:
-          ZYTE_API_KEY: ${{ secrets.ZYTE_API_KEY }}
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
         run: |
@@ -118,13 +120,15 @@ jobs:
       - name: Install Python deps
         run: |
           pip install --upgrade pip
-          pip install --no-cache-dir -r requirements.txt -c constraints.txt
+          pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1'
+          pip install --no-cache-dir -r requirements.txt
           echo "=== Installed versions ==="
-          pip show w3lib scrapy | grep -E "Name|Version"
+          pip show Twisted w3lib scrapy | grep -E "Name|Version"
 
-      - name: Verify w3lib compatibility
+      - name: Verify dependencies
         run: |
-          python -c "import w3lib; print('w3lib version:', w3lib.__version__)"
+          python -c "import twisted; print('Twisted:', twisted.__version__)"
+          python -c "from twisted.internet._sslverify import _setAcceptableProtocols; print('✅ _setAcceptableProtocols OK')"
           python -c "from w3lib.url import _safe_chars; print('✅ _safe_chars OK')"
 
       - name: Run BrowserStack spider
@@ -180,14 +184,16 @@ jobs:
       - name: Install Python deps
         run: |
           pip install --upgrade pip
-          pip install --no-cache-dir -r requirements.txt -c constraints.txt
+          pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1'
+          pip install --no-cache-dir -r requirements.txt
           pip install undetected-chromedriver
           echo "=== Installed versions ==="
-          pip show w3lib scrapy | grep -E "Name|Version"
+          pip show Twisted w3lib scrapy | grep -E "Name|Version"
 
-      - name: Verify w3lib compatibility
+      - name: Verify dependencies
         run: |
-          python -c "import w3lib; print('w3lib version:', w3lib.__version__)"
+          python -c "import twisted; print('Twisted:', twisted.__version__)"
+          python -c "from twisted.internet._sslverify import _setAcceptableProtocols; print('✅ _setAcceptableProtocols OK')"
           python -c "from w3lib.url import _safe_chars; print('✅ _safe_chars OK')"
 
       - name: Run Local Browser spider
