@@ -56,6 +56,7 @@ class TrafficSpider(scrapy.Spider):
         self.user_agent = None
 
     def start_requests(self):
+    def start_requests(self):
         # 1. تحديد الرابط والتحقق منه
         target = getattr(self, 'target_url', None)
         
@@ -70,17 +71,16 @@ class TrafficSpider(scrapy.Spider):
             target = 'https://' + target
             self.logger.info(f"Protocol missing. Updated URL to: {target}")
 
-        # حفظ الرابط النهائي في المتغير ليتم استخدامه
         self.target_url = target
 
-        # 2. إعدادات التخفي والمحاكاة الخاصة بك
-        self.user_agent = self.get_random_user_agent()
+        # 2. إعدادات التخفي (تم تغيير self.user_agent إلى current_ua لتجنب التحذير)
+        current_ua = self.get_random_user_agent()
         self.logger.info(f"Starting traffic bot for: {self.target_url}")
         
         yield scrapy.Request(
             url=self.target_url,
             callback=self.parse_main_page,
-            headers={'User-Agent': self.user_agent},
+            headers={'User-Agent': current_ua},
             meta={
                 'use_zyte': True,
                 'zyte_api': {
