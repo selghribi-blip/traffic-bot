@@ -13,10 +13,8 @@ class TrafficSpider(scrapy.Spider):
         'DOWNLOADER_MIDDLEWARES': {
             'middlewares.fingerprint_rotator.FingerprintRotatorMiddleware': 542,
             'middlewares.proxy_rotator.FreeProxyRotatorMiddleware': 543,
-            'middlewares.zyte_middleware.ZyteMiddleware': 544,
         },
         'FREE_PROXY_LIST_URL': 'https://raw.githubusercontent.com/xyzs996/free-proxy-health-list/main/proxies/all/data.txt',
-        'ZYTE_API_KEY': os.environ.get('ZYTE_API_KEY', ''),
         'ROTATING_PROXY_PAGE_RETRY_TIMES': 5,
         'DOWNLOAD_DELAY': 3,
         'RANDOMIZE_DOWNLOAD_DELAY': True,
@@ -71,20 +69,7 @@ class TrafficSpider(scrapy.Spider):
             callback=self.parse_main_page,
             errback=self.handle_error,
             headers={'User-Agent': current_ua},
-            meta={
-                'use_zyte': True,
-                'zyte_api': {
-                    'browserHtml': True,
-                    'javascript': True,
-                    'actions': [
-                        {'action': 'wait', 'waitTimeout': 5},
-                        {'action': 'scroll', 'direction': 'down', 'pixels': 1000},
-                        {'action': 'wait', 'waitTimeout': 3},
-                        {'action': 'scroll', 'direction': 'down', 'pixels': 1000},
-                        {'action': 'wait', 'waitTimeout': 2},
-                    ],
-                },
-            },
+            meta={},
             dont_filter=True,
         )
 
@@ -118,7 +103,7 @@ class TrafficSpider(scrapy.Spider):
                     callback=self.parse_internal_page,
                     errback=self.handle_error,
                     headers={'User-Agent': self.get_random_user_agent()},
-                    meta={'use_zyte': True},
+                    meta={},
                     dont_filter=True,
                 )
 
@@ -189,18 +174,7 @@ class TrafficSpider(scrapy.Spider):
                             'User-Agent': self.get_random_user_agent(),
                             'Referer': response.url,
                         },
-                        meta={
-                            'use_zyte': True,
-                            'ad_click': True,
-                            'zyte_api': {
-                                'browserHtml': True,
-                                'javascript': True,
-                                'actions': [
-                                    {'action': 'wait', 'waitTimeout': 3},
-                                    {'action': 'scroll', 'direction': 'down', 'pixels': 300},
-                                ],
-                            },
-                        },
+                        meta={'ad_click': True},
                         dont_filter=True,
                     ))
                 except Exception as e:
@@ -232,7 +206,7 @@ class TrafficSpider(scrapy.Spider):
                         'User-Agent': self.get_random_user_agent(),
                         'Referer': response.url,
                     },
-                    meta={'use_zyte': True, 'form_submit': True},
+                    meta={'form_submit': True},
                     dont_filter=True,
                 ))
             except Exception as e:
@@ -329,4 +303,3 @@ class TrafficSpider(scrapy.Spider):
             'forms_filled': forms_filled,
             'timestamp': datetime.now(timezone.utc).isoformat(),
         }
-self.target_url = target_url or self.settings.get('TARGET_URL')
