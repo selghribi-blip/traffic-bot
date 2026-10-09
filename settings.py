@@ -147,3 +147,4 @@ DEPTH_PRIORITY = 1
 # ---------------- Scheduler ----------------
 SCHEDULER_DISK_QUEUE = 'scrapy.squeues.PickleFifoDiskQueue'
 SCHEDULER_MEMORY_QUEUE = 'scrapy.squeues.FifoMemoryQueue'
+TARGET_URL = os.environ.get('TARGET_URL', 'https://www.forjo.tech/')
