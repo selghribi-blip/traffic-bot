@@ -14,105 +14,93 @@ on:
         required: false
         default: 'true'
       run_mode:
-        description: 'Run mode: scrapy, browserstack, or both'
+        description: 'Run mode: scrapy, browserstack, local, or both'
         required: false
         default: 'both'
 
+permissions:
+  actions: write      # ← مطلوب لـ cleanup
+  contents: read
+
 jobs:
+  # ============================================================
+  # 1) SCRAPY SPIDER
+  # ============================================================
   run-scrapy-spider:
     name: Run Scrapy Spider
-    if: github.event.inputs.run_mode == 'both' || github.event.inputs.run_mode == 'scrapy' || github.event_name == 'schedule'
+    if: |
+      github.event_name == 'schedule' ||
+      github.event.inputs.run_mode == 'both' ||
+      github.event.inputs.run_mode == 'scrapy'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-      
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y chromium-chromedriver
-      
-      - name: Install Python dependencies
+
+      - name: Install Python deps
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install undetected-chromedriver
-      
-      - name: Fetch free proxies
+
+      - name: Debug env
+        env:
+          TARGET_URL: ${{ github.event.inputs.target_url || 'https://www.forjo.tech/' }}
         run: |
-          cat << 'EOF' > fetch_proxies.py
-          import requests
-          import re
+          echo "TARGET_URL length: ${#TARGET_URL}"
+          echo "TARGET_URL value: $TARGET_URL"
+          echo "ZYTE set: ${{ secrets.ZYTE_API_KEY != '' }}"
+          echo "MONGODB set: ${{ secrets.MONGODB_URI != '' }}"
 
-          sources = [
-              'https://raw.githubusercontent.com/xyzs996/free-proxy-health-list/main/proxies/all/data.txt',
-              'https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt',
-              'https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt',
-              'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt',
-              'https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt',
-          ]
-
-          all_proxies = set()
-          for url in sources:
-              try:
-                  r = requests.get(url, timeout=15)
-                  if r.status_code == 200:
-                      for line in r.text.strip().split('\n'):
-                          line = line.strip()
-                          if line and re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{1,5}$', line):
-                              all_proxies.add(line)
-              except Exception as e:
-                  print(f'Failed: {url} - {e}')
-
-          with open('proxies.txt', 'w') as f:
-              for p in all_proxies:
-                  f.write(p + '\n')
-          print(f'Total proxies: {len(all_proxies)}')
-          EOF
-          python fetch_proxies.py
-      
       - name: Run Scrapy spider
         env:
           ZYTE_API_KEY: ${{ secrets.ZYTE_API_KEY }}
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           TARGET_URL: ${{ github.event.inputs.target_url || 'https://www.forjo.tech/' }}
         run: |
-          scrapy crawl traffic_bot -a target_url="${TARGET_URL}" -O scrapy_results.json
-      
-      - name: Upload Scrapy results
+          scrapy crawl traffic_bot \
+            -a target_url="${TARGET_URL}" \
+            -O scrapy_results.json \
+            -L INFO
+
+      - name: Upload results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: scrapy-results
           path: scrapy_results.json
+          if-no-files-found: ignore
           retention-days: 7
 
+  # ============================================================
+  # 2) BROWSERSTACK SPIDER
+  # ============================================================
   run-browserstack-spider:
     name: Run BrowserStack Spider
-    if: github.event.inputs.run_mode == 'both' || github.event.inputs.run_mode == 'browserstack'
+    # ← التصحيح الرئيسي: أضفنا schedule
+    if: |
+      github.event_name == 'schedule' ||
+      github.event.inputs.run_mode == 'both' ||
+      github.event.inputs.run_mode == 'browserstack'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-      
-      - name: Install Python dependencies
+
+      - name: Install Python deps
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-      
+
       - name: Run BrowserStack spider
         env:
           BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
@@ -121,74 +109,98 @@ jobs:
           TARGET_URL: ${{ github.event.inputs.target_url || 'https://www.forjo.tech/' }}
           USE_BROWSERSTACK: ${{ github.event.inputs.use_browserstack || 'true' }}
         run: |
-          scrapy crawl browserstack_bot -a target_url="${TARGET_URL}" -a use_browserstack="${USE_BROWSERSTACK}" -O browserstack_results.json
-      
-      - name: Upload BrowserStack results
+          scrapy crawl browserstack_bot \
+            -a target_url="${TARGET_URL}" \
+            -a use_browserstack="${USE_BROWSERSTACK}" \
+            -O browserstack_results.json \
+            -L INFO
+
+      - name: Upload results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: browserstack-results
           path: browserstack_results.json
+          if-no-files-found: ignore
           retention-days: 7
 
+  # ============================================================
+  # 3) LOCAL BROWSER SPIDER
+  # ============================================================
   run-local-browser-spider:
-    name: Run Local Browser Spider (Fallback)
-    if: github.event.inputs.run_mode == 'both' || github.event.inputs.run_mode == 'local'
+    name: Run Local Browser Spider
+    # ← التصحيح: أضفنا schedule
+    if: |
+      github.event_name == 'schedule' ||
+      github.event.inputs.run_mode == 'both' ||
+      github.event.inputs.run_mode == 'local'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
-      
-      - name: Install system dependencies
+
+      # ← استبدل chromium-chromedriver القديم بـ Chrome for Testing
+      - name: Install Chrome (pinned)
         run: |
           sudo apt-get update
-          sudo apt-get install -y chromium-chromedriver
-      
-      - name: Install Python dependencies
+          sudo apt-get install -y wget unzip
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt-get -fy install
+          google-chrome --version
+
+      - name: Install Python deps
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
           pip install undetected-chromedriver
-      
+
       - name: Run Local Browser spider
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           TARGET_URL: ${{ github.event.inputs.target_url || 'https://www.forjo.tech/' }}
         run: |
-          scrapy crawl browserstack_bot -a target_url="${TARGET_URL}" -a use_browserstack="false" -O local_results.json
-      
-      - name: Upload Local results
+          scrapy crawl browserstack_bot \
+            -a target_url="${TARGET_URL}" \
+            -a use_browserstack="false" \
+            -O local_results.json \
+            -L INFO
+
+      - name: Upload results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: local-results
           path: local_results.json
+          if-no-files-found: ignore
           retention-days: 7
 
+  # ============================================================
+  # 4) AGGREGATE
+  # ============================================================
   aggregate-results:
     name: Aggregate Results
     needs: [run-scrapy-spider, run-browserstack-spider, run-local-browser-spider]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: Download all artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-# --- الأسطر الجديدة التي تم إضافتها لحل المشكلة ---
-      - name: Set up Python
-        uses: actions/setup-python@v5
+
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install required Python packages
+      - name: Install pymongo
         run: pip install pymongo
-      # ------------------------------------------------
+
       - name: Aggregate and summarize
         run: |
           echo "=== TRAFFIC BOT RUN SUMMARY ==="
@@ -197,7 +209,7 @@ jobs:
           echo "Trigger: ${{ github.event_name }}"
           echo ""
 
-          cat << 'EOF' > aggregate.py
+          cat << 'PYEOF' > aggregate.py
           import sys, json
 
           try:
@@ -223,7 +235,7 @@ jobs:
               print(f'Status: {visits[0].get("status", "N/A") if visits else "N/A"}')
           except Exception as e:
               print(f"Notice: Could not parse results ({e})")
-          EOF
+          PYEOF
 
           for file in artifacts/*/*.json; do
             if [ -f "$file" ]; then
@@ -232,72 +244,92 @@ jobs:
             fi
           done
 
-      - name: Send summary to MongoDB (optional)
-        if: env.MONGODB_URI != ''
+      # ← فشل صريح إذا كل النتائج صفر
+      - name: Fail if all results empty
+        run: |
+          total=$(python3 - <<'PYEOF'
+          import json, glob
+          total = 0
+          for f in glob.glob('artifacts/*/*.json'):
+              try:
+                  with open(f) as fh:
+                      c = fh.read().strip()
+                      if not c: continue
+                      data = json.loads(c) if c.startswith('[') else [json.loads(l) for l in c.split('\n') if l.strip()]
+                      total += len(data)
+              except Exception:
+                  pass
+          print(total)
+          PYEOF
+          )
+          echo "TOTAL ITEMS: $total"
+          if [ "$total" -eq 0 ]; then
+            echo "::error::No items produced in this run"
+            exit 1
+          fi
+
+      - name: Send summary to MongoDB
+        # ← التصحيح: لا تستخدم env في if
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
         run: |
-          cat << 'EOF' > mongo_log.py
-          import os
-          import json
+          cat << 'PYEOF' > mongo_log.py
+          import os, json
           from pymongo import MongoClient
-          from datetime import datetime
+          from datetime import datetime, timezone
 
-          uri = os.getenv('MONGODB_URI')
-          if uri:
-              try:
-                  client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-                  db = client['traffic_bot']
-                  sessions = db['sessions']
+          uri = os.getenv('MONGODB_URI', '').strip()
+          if not uri:
+              print("MongoDB Notice: MONGODB_URI is empty, skipping")
+              raise SystemExit(0)
 
-                  total_visits = 0
-                  total_ads = 0
-                  total_forms = 0
+          try:
+              client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+              db = client['traffic_bot']
+              sessions = db['sessions']
 
-                  for root, dirs, files in os.walk('artifacts'):
-                      for file in files:
-                          if file.endswith('.json'):
-                              try:
-                                  with open(os.path.join(root, file)) as f:
-                                      content = f.read().strip()
-                                      if not content: continue
+              total_visits = total_ads = total_forms = 0
 
-                                      if content.startswith('['):
-                                          data = json.loads(content)
-                                      else:
-                                          data = [json.loads(line) for line in content.split('\n') if line.strip()]
+              import glob
+              for f in glob.glob('artifacts/*/*.json'):
+                  try:
+                      with open(f) as fh:
+                          c = fh.read().strip()
+                          if not c: continue
+                          data = json.loads(c) if c.startswith('[') else [json.loads(l) for l in c.split('\n') if l.strip()]
+                          for d in data:
+                              if d.get('type') in ['visit', 'browserstack_visit']:
+                                  total_visits += 1
+                                  total_ads += d.get('ads_clicked', 0)
+                                  total_forms += d.get('forms_filled', 0)
+                  except Exception:
+                      pass
 
-                                      for d in data:
-                                          if d.get('type') in ['visit', 'browserstack_visit']:
-                                              total_visits += 1
-                                              total_ads += d.get('ads_clicked', 0)
-                                              total_forms += d.get('forms_filled', 0)
-                              except Exception as e:
-                                  pass
-
-                  sessions.insert_one({
-                      'run_id': '${{ github.run_id }}',
-                      'run_number': ${{ github.run_number }},
-                      'trigger': '${{ github.event_name }}',
-                      'timestamp': datetime.utcnow(),
-                      'total_visits': total_visits,
-                      'total_ads_clicked': total_ads,
-                      'total_forms_filled': total_forms,
-                      'status': 'completed',
-                  })
-                  print(f'Logged session to MongoDB: {total_visits} visits, {total_ads} ads, {total_forms} forms')
-              except Exception as e:
-                  print(f"MongoDB Notice: {e}")
-          EOF
+              sessions.insert_one({
+                  'run_id': '${{ github.run_id }}',
+                  'run_number': ${{ github.run_number }},
+                  'trigger': '${{ github.event_name }}',
+                  'timestamp': datetime.now(timezone.utc),
+                  'total_visits': total_visits,
+                  'total_ads_clicked': total_ads,
+                  'total_forms_filled': total_forms,
+                  'status': 'completed' if total_visits else 'empty',
+              })
+              print(f"Logged: {total_visits} visits, {total_ads} ads, {total_forms} forms")
+          except Exception as e:
+              print(f"MongoDB Notice: {e}")
+          PYEOF
           python3 mongo_log.py
 
+  # ============================================================
+  # 5) CLEANUP
+  # ============================================================
   cleanup:
-    name: Cleanup Old Artifacts
+    name: Cleanup Old Runs
     runs-on: ubuntu-latest
     if: always()
     steps:
-      - name: Cleanup old workflow runs
-        uses: Mattraks/delete-workflow-runs@v2
+      - uses: Mattraks/delete-workflow-runs@v2
         with:
           token: ${{ github.token }}
           repository: ${{ github.repository }}
