@@ -6,21 +6,34 @@ on:
   workflow_dispatch:
     inputs:
       target_url:
-        description: 'Target URL to visit'
+        description: 'Override target URL (leave empty for default from Variables)'
         required: false
-        default: 'https://www.forjo.tech/'
-      use_browserstack:
-        description: 'Use BrowserStack for real browser automation'
-        required: false
-        default: 'true'
+        default: ''
       run_mode:
-        description: 'Run mode: scrapy, browserstack, local, or both'
+        description: 'Run mode'
         required: false
         default: 'both'
+        type: choice
+        options:
+          - both
+          - scrapy
+          - browserstack
+          - local
+      use_browserstack:
+        description: 'Use BrowserStack (true/false)'
+        required: false
+        default: 'true'
 
 permissions:
-  actions: write      # ← مطلوب لـ cleanup
+  actions: write
   contents: read
+
+# ============================================================
+# ملاحظة: TARGET_URL يُقرأ بترتيب الأولوية:
+#   1) github.event.inputs.target_url   (عند التشغيل اليدوي)
+#   2) vars.TARGET_URL                  (Repository Variable)
+#   3) 'https://www.forjo.tech/'        (احتياطي مضمّن)
+# ============================================================
 
 jobs:
   # ============================================================
@@ -49,7 +62,7 @@ jobs:
 
       - name: Debug env
         env:
-          TARGET_URL: ${{ github.event.inputs.target_url || 'https://www.forjo.tech/' }}
+          TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
         run: |
           echo "TARGET_URL length: ${#TARGET_URL}"
           echo "TARGET_URL value: $TARGET_URL"
@@ -60,7 +73,7 @@ jobs:
         env:
           ZYTE_API_KEY: ${{ secrets.ZYTE_API_KEY }}
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
-          TARGET_URL: ${{ github.event.inputs.target_url || 'https://www.forjo.tech/' }}
+          TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
         run: |
           scrapy crawl traffic_bot \
             -a target_url="${TARGET_URL}" \
@@ -81,7 +94,6 @@ jobs:
   # ============================================================
   run-browserstack-spider:
     name: Run BrowserStack Spider
-    # ← التصحيح الرئيسي: أضفنا schedule
     if: |
       github.event_name == 'schedule' ||
       github.event.inputs.run_mode == 'both' ||
@@ -106,7 +118,7 @@ jobs:
           BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
           BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
-          TARGET_URL: ${{ github.event.inputs.target_url || 'https://www.forjo.tech/' }}
+          TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
           USE_BROWSERSTACK: ${{ github.event.inputs.use_browserstack || 'true' }}
         run: |
           scrapy crawl browserstack_bot \
@@ -129,7 +141,6 @@ jobs:
   # ============================================================
   run-local-browser-spider:
     name: Run Local Browser Spider
-    # ← التصحيح: أضفنا schedule
     if: |
       github.event_name == 'schedule' ||
       github.event.inputs.run_mode == 'both' ||
@@ -144,7 +155,6 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      # ← استبدل chromium-chromedriver القديم بـ Chrome for Testing
       - name: Install Chrome (pinned)
         run: |
           sudo apt-get update
@@ -162,7 +172,7 @@ jobs:
       - name: Run Local Browser spider
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
-          TARGET_URL: ${{ github.event.inputs.target_url || 'https://www.forjo.tech/' }}
+          TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
         run: |
           scrapy crawl browserstack_bot \
             -a target_url="${TARGET_URL}" \
@@ -180,7 +190,7 @@ jobs:
           retention-days: 7
 
   # ============================================================
-  # 4) AGGREGATE
+  # 4) AGGREGATE RESULTS
   # ============================================================
   aggregate-results:
     name: Aggregate Results
@@ -244,7 +254,6 @@ jobs:
             fi
           done
 
-      # ← فشل صريح إذا كل النتائج صفر
       - name: Fail if all results empty
         run: |
           total=$(python3 - <<'PYEOF'
@@ -269,12 +278,11 @@ jobs:
           fi
 
       - name: Send summary to MongoDB
-        # ← التصحيح: لا تستخدم env في if
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
         run: |
           cat << 'PYEOF' > mongo_log.py
-          import os, json
+          import os, json, glob
           from pymongo import MongoClient
           from datetime import datetime, timezone
 
@@ -290,7 +298,6 @@ jobs:
 
               total_visits = total_ads = total_forms = 0
 
-              import glob
               for f in glob.glob('artifacts/*/*.json'):
                   try:
                       with open(f) as fh:
