@@ -29,10 +29,10 @@ permissions:
   contents: read
 
 # ============================================================
-# ملاحظة: TARGET_URL يُقرأ بترتيب الأولوية:
-#   1) github.event.inputs.target_url   (عند التشغيل اليدوي)
+# TARGET_URL priority:
+#   1) github.event.inputs.target_url   (manual override)
 #   2) vars.TARGET_URL                  (Repository Variable)
-#   3) 'https://www.forjo.tech/'        (احتياطي مضمّن)
+#   3) 'https://www.forjo.tech/'        (fallback)
 # ============================================================
 
 jobs:
@@ -58,7 +58,14 @@ jobs:
       - name: Install Python deps
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install --no-cache-dir -r requirements.txt -c constraints.txt
+          echo "=== Installed versions ==="
+          pip show w3lib scrapy | grep -E "Name|Version"
+
+      - name: Verify w3lib compatibility
+        run: |
+          python -c "import w3lib; print('w3lib version:', w3lib.__version__)"
+          python -c "from w3lib.url import _safe_chars; print('✅ _safe_chars OK')"
 
       - name: Debug env
         env:
@@ -111,8 +118,11 @@ jobs:
       - name: Install Python deps
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt -c constraints.txt
-      - name: Verify w3lib version
+          pip install --no-cache-dir -r requirements.txt -c constraints.txt
+          echo "=== Installed versions ==="
+          pip show w3lib scrapy | grep -E "Name|Version"
+
+      - name: Verify w3lib compatibility
         run: |
           python -c "import w3lib; print('w3lib version:', w3lib.__version__)"
           python -c "from w3lib.url import _safe_chars; print('✅ _safe_chars OK')"
@@ -170,8 +180,15 @@ jobs:
       - name: Install Python deps
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install --no-cache-dir -r requirements.txt -c constraints.txt
           pip install undetected-chromedriver
+          echo "=== Installed versions ==="
+          pip show w3lib scrapy | grep -E "Name|Version"
+
+      - name: Verify w3lib compatibility
+        run: |
+          python -c "import w3lib; print('w3lib version:', w3lib.__version__)"
+          python -c "from w3lib.url import _safe_chars; print('✅ _safe_chars OK')"
 
       - name: Run Local Browser spider
         env:
