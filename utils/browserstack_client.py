@@ -1,14 +1,10 @@
 # utils/browserstack_client.py
 """
-BrowserStack + Local Browser Client
-====================================
-يدعم:
-  - BrowserStack Automate (متصفحات حقيقية على أجهزة حقيقية)
-  - Local Chrome/Chromium (بديل مجاني)
-
-ملاحظة مهمة:
-  BrowserStack يوفر بصمة متصفح حقيقية بالفعل (لا حاجة لـ FingerprintRotator).
-  لكنه يحتاج بروكسي لتغيير IP (لتجنب حظر مراكز البيانات).
+BrowserStack + Local Browser Client — Fixed
+============================================
+- حذف seleniumVersion (غير مدعوم في BrowserStack API الجديد)
+- حذف excludeSwitches/useAutomationExtension (تعارض مع undetected-chromedriver)
+- معالجة أخطاء محسّنة + fallback آمن
 """
 import os
 import time
@@ -59,46 +55,42 @@ class BrowserStackClient:
     ]
 
     def __init__(self, username=None, access_key=None):
-        self.username = username or os.environ.get('BROWSERSTACK_USERNAME', '')
-        self.access_key = access_key or os.environ.get('BROWSERSTACK_ACCESS_KEY', '')
+        self.username = username or os.environ.get('BROWSERSTACK_USERNAME', '').strip()
+        self.access_key = access_key or os.environ.get('BROWSERSTACK_ACCESS_KEY', '').strip()
         self.driver = None
 
-    # ---------- Session ----------
+    # ============================================================
+    # BrowserStack
+    # ============================================================
     def start_session(self, url, browser='chrome', os_name='Windows', os_version='11',
                       proxy=None, use_local=False):
-        """
-        يبدأ جلسة BrowserStack.
-        use_local: لا تفعّله إلا إذا شغّلت BrowserStackLocal tunnel.
-        """
+        """ينشئ جلسة BrowserStack (بدون seleniumVersion)."""
+        if not (self.username and self.access_key):
+            raise RuntimeError("BrowserStack credentials missing")
+
         options = Options()
         options.set_capability('browserName', browser)
         options.set_capability('browserVersion', 'latest')
 
+        # ← لا seleniumVersion — غير مدعوم
         bstack_opts = {
             'os': os_name,
             'osVersion': os_version,
-            'local': use_local,          # ← false افتراضيًا
-            'seleniumVersion': '4.18.0',
+            'local': use_local,
             'projectName': 'Traffic Bot',
             'buildName': f'Traffic Bot - {os_name} {os_version} - {browser}',
-            'sessionName': f'Visit {url[:80]}',
+            'sessionName': f'Visit {url[:60]}',
             'debug': True,
             'networkLogs': True,
             'consoleLogs': 'info',
+            'userName': self.username,
+            'accessKey': self.access_key,
         }
 
-        # بروكسي اختياري
         if proxy:
             bstack_opts['proxy'] = proxy
 
         options.set_capability('bstack:options', bstack_opts)
-
-        # credentials عبر options (وليس في URL)
-        options.set_capability('bstack:options', {
-            **bstack_opts,
-            'userName': self.username,
-            'accessKey': self.access_key,
-        })
 
         self.driver = webdriver.Remote(
             command_executor='https://hub-cloud.browserstack.com/wd/hub',
@@ -110,7 +102,9 @@ class BrowserStackClient:
         self.wait_for_page_load(timeout=30)
         return self.driver
 
-    # ---------- Actions ----------
+    # ============================================================
+    # Common actions (shared by both clients)
+    # ============================================================
     def click_ads(self, ad_selectors=None):
         selectors = ad_selectors or self.AD_SELECTORS
         clicked = 0
@@ -121,7 +115,6 @@ class BrowserStackClient:
                     try:
                         if not (el.is_displayed() and el.is_enabled()):
                             continue
-                        # scroll + click عبر JS لتجنّب Intercepted
                         self.driver.execute_script(
                             "arguments[0].scrollIntoView({block:'center'});", el
                         )
@@ -160,11 +153,8 @@ class BrowserStackClient:
                                     filled_any = True
                             except NoSuchElementException:
                                 continue
-
                         if not filled_any:
                             continue
-
-                        # Submit
                         try:
                             submit = form.find_element(
                                 By.CSS_SELECTOR,
@@ -196,7 +186,9 @@ class BrowserStackClient:
         except TimeoutException:
             pass
 
-    # ---------- Data generators ----------
+    # ============================================================
+    # Data generators
+    # ============================================================
     def generate_form_data(self):
         return {
             'input[type="email"]': self.generate_fake_email(),
@@ -213,18 +205,17 @@ class BrowserStackClient:
 
     def generate_fake_name(self):
         first = ['John', 'Jane', 'Alex', 'Sarah', 'Mike', 'Lisa', 'David', 'Emma']
-        last = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller']
+        last = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia']
         return f"{random.choice(first)} {random.choice(last)}"
 
     def generate_fake_message(self):
-        msgs = [
+        return random.choice([
             "Great content! Keep up the good work.",
             "Very informative article, thanks for sharing.",
             "I enjoyed reading this, very helpful.",
             "Nice blog, subscribed to your newsletter.",
             "Interesting perspective on this topic.",
-        ]
-        return random.choice(msgs)
+        ])
 
     def generate_fake_subject(self):
         return random.choice(['Inquiry', 'Feedback', 'Question', 'Support'])
@@ -232,7 +223,12 @@ class BrowserStackClient:
     def generate_fake_phone(self):
         return f"+212{random.randint(600000000, 699999999)}"
 
-    # ---------- Cleanup ----------
+    def take_screenshot(self, filename=None):
+        if not filename:
+            filename = f"screenshot_{int(time.time())}.png"
+        self.driver.save_screenshot(filename)
+        return filename
+
     def close(self):
         if self.driver:
             try:
@@ -243,14 +239,18 @@ class BrowserStackClient:
                 self.driver = None
 
 
-class LocalBrowserClient:
-    """متصفح محلي عبر undetected-chromedriver مع مجلد مؤقت فريد."""
+class LocalBrowserClient(BrowserStackClient):
+    """
+    نسخة محلية من Chrome مع anti-detection.
+    ترث كل الأساليب من BrowserStackClient.
+    """
 
     def __init__(self):
-        self.driver = None
+        super().__init__()  # لا credentials مطلوبة
         self._user_data_dir = None
 
     def start_session(self, url, headless=True, proxy=None):
+        """ينشئ Chrome محلي بدون excludeSwitches."""
         options = Options()
         if headless:
             options.add_argument('--headless=new')
@@ -262,54 +262,48 @@ class LocalBrowserClient:
         options.add_argument('--disable-setuid-sandbox')
         options.add_argument('--window-size=1920,1080')
         options.add_argument('--disable-blink-features=AutomationControlled')
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
 
-        # مجلد مؤقت فريد (سبب الفشل السابق: استخدام مجلد مشترك)
+        # ← لا excludeSwitches، لا useAutomationExtension
+
+        # مجلد مؤقت فريد
         self._user_data_dir = tempfile.mkdtemp(prefix='uc_chrome_')
         options.add_argument(f'--user-data-dir={self._user_data_dir}')
 
-        # بروكسي اختياري
         if proxy:
             options.add_argument(f'--proxy-server={proxy}')
 
-        # محاولة undetected-chromedriver أولاً
+        # جرّب undetected-chromedriver أولاً
+        driver = None
         try:
             import undetected_chromedriver as uc
-            self.driver = uc.Chrome(options=options, use_subprocess=True)
+            logger.info("🖥️ Trying undetected-chromedriver")
+            driver = uc.Chrome(options=options, use_subprocess=True)
+            logger.info("✅ undetected-chromedriver started")
         except Exception as e:
-            logger.warning(f"⚠️ uc.Chrome failed: {e}. Falling back to plain Chrome.")
-            self.driver = webdriver.Chrome(options=options)
+            logger.warning(f"⚠️ uc.Chrome failed: {e}")
+            # Fallback: Selenium العادي
+            try:
+                logger.info("🖥️ Falling back to plain Chrome")
+                driver = webdriver.Chrome(options=options)
+                logger.info("✅ Plain Chrome started")
+            except Exception as e2:
+                logger.error(f"❌ Plain Chrome failed too: {e2}")
+                raise
 
-        # إخفاء navigator.webdriver
-        self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-            'source': '''
-                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
-                Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
-            '''
-        })
+        self.driver = driver
+
+        # إخفاء webdriver (يعمل مع الحالتين)
+        try:
+            self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                'source': '''
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+                    Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
+                '''
+            })
+        except Exception as e:
+            logger.debug(f"CDP script failed (non-critical): {e}")
 
         self.driver.set_page_load_timeout(60)
         self.driver.get(url)
         return self.driver
-
-    def click_ads(self, ad_selectors=None):
-        return BrowserStackClient._click_ads_impl(self, ad_selectors)
-
-    def fill_form(self, form_data=None, form_selectors=None):
-        return BrowserStackClient._fill_form_impl(self, form_data, form_selectors)
-
-    def scroll_page(self, scroll_count=5):
-        for _ in range(scroll_count):
-            self.driver.execute_script("window.scrollBy(0, window.innerHeight);")
-            time.sleep(random.uniform(1, 2))
-
-    def close(self):
-        if self.driver:
-            try:
-                self.driver.quit()
-            except Exception:
-                pass
-            finally:
-                self.driver = None
