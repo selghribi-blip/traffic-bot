@@ -56,6 +56,24 @@ class TrafficSpider(scrapy.Spider):
         self.user_agent = None
 
     def start_requests(self):
+        # 1. تحديد الرابط والتحقق منه
+        target = getattr(self, 'target_url', None)
+        
+        if not target:
+            target = self.settings.get('TARGET_URL', 'https://www.forjo.tech/')
+            self.logger.info(f"Using default URL: {target}")
+        else:
+            self.logger.info(f"URL passed from command line: {target}")
+
+        # إضافة البروتوكول إذا كان مفقوداً
+        if not target.startswith(('http://', 'https://')):
+            target = 'https://' + target
+            self.logger.info(f"Protocol missing. Updated URL to: {target}")
+
+        # حفظ الرابط النهائي في المتغير ليتم استخدامه
+        self.target_url = target
+
+        # 2. إعدادات التخفي والمحاكاة الخاصة بك
         self.user_agent = self.get_random_user_agent()
         self.logger.info(f"Starting traffic bot for: {self.target_url}")
         
@@ -79,6 +97,7 @@ class TrafficSpider(scrapy.Spider):
             },
             dont_filter=True
         )
+
 
     def get_random_user_agent(self):
         user_agents = [
