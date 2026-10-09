@@ -22,20 +22,38 @@ class BrowserStackSpider(scrapy.Spider):
         self.forms_filled = 0
 
     def start_requests(self):
+        # 1. تحديد الرابط والتحقق منه بنفس الطريقة
+        target = getattr(self, 'target_url', None)
+        
+        if not target:
+            target = self.settings.get('TARGET_URL', 'https://www.forjo.tech/')
+            self.logger.info(f"Using default URL: {target}")
+        else:
+            self.logger.info(f"URL passed from command line: {target}")
+
+        if not target.startswith(('http://', 'https://')):
+            target = 'https://' + target
+            self.logger.info(f"Protocol missing. Updated URL to: {target}")
+
+        self.target_url = target
         self.logger.info(f"Starting BrowserStack bot for: {self.target_url}")
         
-        if self.use_browserstack:
+        # 2. التحقق من إعدادات BrowserStack
+        if getattr(self, 'use_browserstack', False):
+            import os
             username = os.environ.get('BROWSERSTACK_USERNAME')
             access_key = os.environ.get('BROWSERSTACK_ACCESS_KEY')
             if not username or not access_key:
                 self.logger.error("BrowserStack credentials not found, falling back to local browser")
                 self.use_browserstack = False
         
+        # 3. إرسال الطلب
         yield scrapy.Request(
             url=self.target_url,
             callback=self.parse_with_browser,
             dont_filter=True
         )
+
 
     def parse_with_browser(self, response):
         if self.use_browserstack:
