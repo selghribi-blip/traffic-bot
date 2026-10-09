@@ -107,38 +107,21 @@ class TrafficSpider(scrapy.Spider):
         ]
         return random.choice(user_agents)
 
-    def parse_main_page(self, response):
-        self.visited_urls.add(self.target_url)
-        self.proxy_used = response.meta.get('proxy', 'direct')
+def parse_main_page(self, response):
+    self.visited_urls.add(self.target_url)
+    self.proxy_used = response.meta.get('proxy', 'direct')
 
-        self.logger.info(f"Visited: {self.target_url} | Status: {response.status}")
+    ad_requests, ads_clicked = self.extract_and_click_ads(response)
+    form_requests, forms_filled = self.extract_and_fill_forms(response)
+    for req in ad_requests + form_requests:
+        yield req                      # تسليم طلبات الإعلانات والنماذج
 
-        ads_clicked = self.extract_and_click_ads(response)
-        forms_filled = self.extract_and_fill_forms(response)
-        internal_links = self.extract_internal_links(response)
+    for link in self.extract_internal_links(response)[:3]:
+        if link not in self.visited_urls:
+            self.visited_urls.add(link)
+            yield scrapy.Request(url=link, callback=self.parse_internal_page, ...)
 
-        for link in internal_links[:3]:
-            if link not in self.visited_urls:
-                self.visited_urls.add(link)
-                yield scrapy.Request(
-                    url=link,
-                    callback=self.parse_internal_page,
-                    headers={'User-Agent': self.get_random_user_agent(), 'Referer': response.url},
-                    meta={
-                        'use_zyte': True,
-                        'zyte_api': {
-                            'browserHtml': True,
-                            'javascript': True,
-                            'actions': [
-                                {'action': 'wait', 'waitTimeout': 3},
-                                {'action': 'scroll', 'direction': 'down', 'pixels': 500},
-                            ],
-                        }
-                    },
-                    dont_filter=True
-                )
-
-        yield self.create_log_entry(response, ads_clicked, forms_filled)
+    yield self.create_log_entry(response, ads_clicked, forms_filled)
 
     def parse_internal_page(self, response):
         self.logger.info(f"Visited internal: {response.url} | Status: {response.status}")
