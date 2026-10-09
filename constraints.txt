@@ -1,5 +1,5 @@
-# constraints.txt
+# constraints.txt — يفرض إصدارات متوافقة مع Scrapy 2.18.0
 w3lib>=2.1.1,<2.4.0
-cryptography>=41.0.5
-pyOpenSSL>=24.3.0
+pyopenssl>=24.3.0
+cryptography>=42.0.0
 Twisted>=22.10.0
