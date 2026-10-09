@@ -56,7 +56,6 @@ class TrafficSpider(scrapy.Spider):
         self.user_agent = None
 
     def start_requests(self):
-    def start_requests(self):
         # 1. تحديد الرابط والتحقق منه
         target = getattr(self, 'target_url', None)
         
