@@ -112,6 +112,10 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt -c constraints.txt
+      - name: Verify w3lib version
+        run: |
+          python -c "import w3lib; print('w3lib version:', w3lib.__version__)"
+          python -c "from w3lib.url import _safe_chars; print('✅ _safe_chars OK')"
 
       - name: Run BrowserStack spider
         env:
