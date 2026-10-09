@@ -54,7 +54,6 @@ class BrowserStackSpider(scrapy.Spider):
             dont_filter=True
         )
 
-
     def parse_with_browser(self, response):
         if self.use_browserstack:
             self.client = BrowserStackClient(
