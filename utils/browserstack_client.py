@@ -1,12 +1,32 @@
+# utils/browserstack_client.py
+"""
+BrowserStack + Local Browser Client
+====================================
+يدعم:
+  - BrowserStack Automate (متصفحات حقيقية على أجهزة حقيقية)
+  - Local Chrome/Chromium (بديل مجاني)
+
+ملاحظة مهمة:
+  BrowserStack يوفر بصمة متصفح حقيقية بالفعل (لا حاجة لـ FingerprintRotator).
+  لكنه يحتاج بروكسي لتغيير IP (لتجنب حظر مراكز البيانات).
+"""
+import os
+import time
+import random
+import tempfile
+import logging
+
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException
-import time
-import random
-import os
+from selenium.common.exceptions import (
+    TimeoutException, NoSuchElementException,
+    ElementClickInterceptedException, WebDriverException,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class BrowserStackClient:
@@ -26,167 +46,145 @@ class BrowserStackClient:
         'a[href*="mgid"]',
         'a[href*="taboola"]',
         'a[href*="outbrain"]',
-        '.adsense',
-        '.ad-banner',
-        '[class*="banner-ad"]',
+        '.adsense', '.ad-banner', '[class*="banner-ad"]',
     ]
 
     FORM_SELECTORS = [
-        'form[action*="contact"]',
-        'form[action*="subscribe"]',
-        'form[action*="newsletter"]',
-        'form[id*="contact"]',
-        'form[id*="subscribe"]',
-        'form[class*="contact"]',
-        'form[class*="subscribe"]',
-        'form[class*="newsletter"]',
-        '.contact-form',
-        '.subscribe-form',
-        '.newsletter-form',
-        '#contact-form',
-        '#subscribe-form',
+        'form[action*="contact"]', 'form[action*="subscribe"]',
+        'form[action*="newsletter"]', 'form[id*="contact"]',
+        'form[id*="subscribe"]', 'form[class*="contact"]',
+        'form[class*="subscribe"]', 'form[class*="newsletter"]',
+        '.contact-form', '.subscribe-form', '.newsletter-form',
+        '#contact-form', '#subscribe-form',
     ]
 
-    FIELD_SELECTORS = {
-        'email': ['input[type="email"]', 'input[name*="email"]', 'input[id*="email"]'],
-        'name': ['input[name*="name"]', 'input[id*="name"]', 'input[placeholder*="name" i]'],
-        'message': ['textarea[name*="message"]', 'textarea[id*="message"]', 'textarea[placeholder*="message" i]'],
-        'subject': ['input[name*="subject"]', 'input[id*="subject"]'],
-        'phone': ['input[type="tel"]', 'input[name*="phone"]', 'input[id*="phone"]'],
-    }
-
-    def __init__(self, username, access_key):
-        self.username = username
-        self.access_key = access_key
+    def __init__(self, username=None, access_key=None):
+        self.username = username or os.environ.get('BROWSERSTACK_USERNAME', '')
+        self.access_key = access_key or os.environ.get('BROWSERSTACK_ACCESS_KEY', '')
         self.driver = None
 
-    def start_session(self, url, browser='chrome', os_name='Windows', os_version='11'):
+    # ---------- Session ----------
+    def start_session(self, url, browser='chrome', os_name='Windows', os_version='11',
+                      proxy=None, use_local=False):
+        """
+        يبدأ جلسة BrowserStack.
+        use_local: لا تفعّله إلا إذا شغّلت BrowserStackLocal tunnel.
+        """
         options = Options()
         options.set_capability('browserName', browser)
         options.set_capability('browserVersion', 'latest')
-        options.set_capability('bstack:options', {
+
+        bstack_opts = {
             'os': os_name,
             'osVersion': os_version,
-            'local': True,
+            'local': use_local,          # ← false افتراضيًا
             'seleniumVersion': '4.18.0',
             'projectName': 'Traffic Bot',
             'buildName': f'Traffic Bot - {os_name} {os_version} - {browser}',
-            'sessionName': f'Visit {url}',
+            'sessionName': f'Visit {url[:80]}',
             'debug': True,
             'networkLogs': True,
             'consoleLogs': 'info',
+        }
+
+        # بروكسي اختياري
+        if proxy:
+            bstack_opts['proxy'] = proxy
+
+        options.set_capability('bstack:options', bstack_opts)
+
+        # credentials عبر options (وليس في URL)
+        options.set_capability('bstack:options', {
+            **bstack_opts,
+            'userName': self.username,
+            'accessKey': self.access_key,
         })
-        
+
         self.driver = webdriver.Remote(
-            command_executor=f'https://{self.username}:{self.access_key}@hub-cloud.browserstack.com/wd/hub',
-            options=options
+            command_executor='https://hub-cloud.browserstack.com/wd/hub',
+            options=options,
         )
         self.driver.set_page_load_timeout(60)
+        self.driver.set_script_timeout(30)
         self.driver.get(url)
+        self.wait_for_page_load(timeout=30)
         return self.driver
 
+    # ---------- Actions ----------
     def click_ads(self, ad_selectors=None):
         selectors = ad_selectors or self.AD_SELECTORS
         clicked = 0
-        
         for selector in selectors:
             try:
                 elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                for element in elements[:3]:
+                for el in elements[:3]:
                     try:
-                        if element.is_displayed() and element.is_enabled():
-                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
-                            time.sleep(random.uniform(0.5, 1.5))
-                            element.click()
-                            time.sleep(random.uniform(2, 4))
-                            clicked += 1
-                            print(f"Clicked ad: {selector}")
-                    except (ElementClickInterceptedException, TimeoutException):
+                        if not (el.is_displayed() and el.is_enabled()):
+                            continue
+                        # scroll + click عبر JS لتجنّب Intercepted
+                        self.driver.execute_script(
+                            "arguments[0].scrollIntoView({block:'center'});", el
+                        )
+                        time.sleep(random.uniform(0.5, 1.5))
+                        try:
+                            el.click()
+                        except ElementClickInterceptedException:
+                            self.driver.execute_script("arguments[0].click();", el)
+                        time.sleep(random.uniform(1.5, 3.0))
+                        clicked += 1
+                        logger.info(f"🖱️ Clicked ad: {selector}")
+                    except Exception:
                         continue
             except Exception as e:
-                print(f"Error clicking ads with selector {selector}: {e}")
-        
+                logger.debug(f"Ad selector error ({selector}): {e}")
         return clicked
 
     def fill_form(self, form_data=None, form_selectors=None):
         selectors = form_selectors or self.FORM_SELECTORS
         filled = 0
-        
         for form_selector in selectors:
             try:
                 forms = self.driver.find_elements(By.CSS_SELECTOR, form_selector)
                 for form in forms[:2]:
                     try:
                         data = form_data or self.generate_form_data()
-                        for field_selector, value in data.items():
+                        filled_any = False
+                        for field_sel, value in data.items():
                             try:
-                                field = form.find_element(By.CSS_SELECTOR, field_selector)
+                                field = form.find_element(By.CSS_SELECTOR, field_sel)
                                 if field.is_displayed() and field.is_enabled():
                                     field.clear()
-                                    time.sleep(0.3)
+                                    time.sleep(0.2)
                                     field.send_keys(value)
-                                    time.sleep(0.3)
+                                    time.sleep(0.2)
+                                    filled_any = True
                             except NoSuchElementException:
                                 continue
-                        
+
+                        if not filled_any:
+                            continue
+
+                        # Submit
                         try:
-                            submit = form.find_element(By.CSS_SELECTOR, 'button[type="submit"], input[type="submit"]')
+                            submit = form.find_element(
+                                By.CSS_SELECTOR,
+                                'button[type="submit"], input[type="submit"]',
+                            )
                             if submit.is_displayed() and submit.is_enabled():
                                 submit.click()
                                 time.sleep(random.uniform(2, 4))
                                 filled += 1
-                                print(f"Filled and submitted form: {form_selector}")
+                                logger.info(f"📝 Filled form: {form_selector}")
                         except NoSuchElementException:
                             pass
                     except Exception as e:
-                        print(f"Error filling form {form_selector}: {e}")
+                        logger.debug(f"Form fill error: {e}")
             except Exception as e:
-                print(f"Error finding forms with selector {form_selector}: {e}")
-        
+                logger.debug(f"Form selector error ({form_selector}): {e}")
         return filled
 
-    def generate_form_data(self):
-        return {
-            'input[type="email"]': self.generate_fake_email(),
-            'input[name*="name"]': self.generate_fake_name(),
-            'textarea[name*="message"]': self.generate_fake_message(),
-            'input[name*="subject"]': self.generate_fake_subject(),
-            'input[type="tel"]': self.generate_fake_phone(),
-        }
-
-    def generate_fake_email(self):
-        domains = ['gmail.com', 'yahoo.com', 'outlook.com', 'hotmail.com', 'protonmail.com']
-        names = ['john', 'jane', 'alex', 'sarah', 'mike', 'lisa', 'david', 'emma', 'chris', 'amy']
-        nums = random.randint(100, 9999)
-        return f"{random.choice(names)}{nums}@{random.choice(domains)}"
-
-    def generate_fake_name(self):
-        first = ['John', 'Jane', 'Alex', 'Sarah', 'Mike', 'Lisa', 'David', 'Emma', 'Chris', 'Amy']
-        last = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Wilson', 'Taylor']
-        return f"{random.choice(first)} {random.choice(last)}"
-
-    def generate_fake_message(self):
-        messages = [
-            "Great content! Keep up the good work.",
-            "Very informative article, thanks for sharing.",
-            "I enjoyed reading this, very helpful.",
-            "Nice blog, subscribed to your newsletter.",
-            "Interesting perspective on this topic.",
-            "Thanks for the valuable information.",
-            "Well written and easy to understand.",
-            "Looking forward to more posts like this.",
-        ]
-        return random.choice(messages)
-
-    def generate_fake_subject(self):
-        subjects = ['Inquiry', 'Feedback', 'Question', 'Collaboration', 'General Question', 'Support']
-        return random.choice(subjects)
-
-    def generate_fake_phone(self):
-        return f"+212{random.randint(600000000, 699999999)}"
-
     def scroll_page(self, scroll_count=5):
-        for i in range(scroll_count):
+        for _ in range(scroll_count):
             self.driver.execute_script("window.scrollBy(0, window.innerHeight);")
             time.sleep(random.uniform(1, 2))
 
@@ -198,86 +196,120 @@ class BrowserStackClient:
         except TimeoutException:
             pass
 
-    def take_screenshot(self, filename=None):
-        if not filename:
-            filename = f"screenshot_{int(time.time())}.png"
-        self.driver.save_screenshot(filename)
-        return filename
+    # ---------- Data generators ----------
+    def generate_form_data(self):
+        return {
+            'input[type="email"]': self.generate_fake_email(),
+            'input[name*="name"]': self.generate_fake_name(),
+            'textarea[name*="message"]': self.generate_fake_message(),
+            'input[name*="subject"]': self.generate_fake_subject(),
+            'input[type="tel"]': self.generate_fake_phone(),
+        }
 
-    def get_page_source(self):
-        return self.driver.page_source
+    def generate_fake_email(self):
+        domains = ['gmail.com', 'yahoo.com', 'outlook.com', 'protonmail.com']
+        names = ['john', 'jane', 'alex', 'sarah', 'mike', 'lisa', 'david', 'emma']
+        return f"{random.choice(names)}{random.randint(100,9999)}@{random.choice(domains)}"
 
-    def execute_script(self, script):
-        return self.driver.execute_script(script)
+    def generate_fake_name(self):
+        first = ['John', 'Jane', 'Alex', 'Sarah', 'Mike', 'Lisa', 'David', 'Emma']
+        last = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller']
+        return f"{random.choice(first)} {random.choice(last)}"
 
+    def generate_fake_message(self):
+        msgs = [
+            "Great content! Keep up the good work.",
+            "Very informative article, thanks for sharing.",
+            "I enjoyed reading this, very helpful.",
+            "Nice blog, subscribed to your newsletter.",
+            "Interesting perspective on this topic.",
+        ]
+        return random.choice(msgs)
+
+    def generate_fake_subject(self):
+        return random.choice(['Inquiry', 'Feedback', 'Question', 'Support'])
+
+    def generate_fake_phone(self):
+        return f"+212{random.randint(600000000, 699999999)}"
+
+    # ---------- Cleanup ----------
     def close(self):
         if self.driver:
-            self.driver.quit()
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+            finally:
+                self.driver = None
 
 
 class LocalBrowserClient:
+    """متصفح محلي عبر undetected-chromedriver مع مجلد مؤقت فريد."""
+
     def __init__(self):
         self.driver = None
+        self._user_data_dir = None
 
-    def start_session(self, url, headless=True):
+    def start_session(self, url, headless=True, proxy=None):
         options = Options()
         if headless:
             options.add_argument('--headless=new')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
+        options.add_argument('--disable-software-rasterizer')
+        options.add_argument('--disable-extensions')
+        options.add_argument('--disable-setuid-sandbox')
         options.add_argument('--window-size=1920,1080')
         options.add_argument('--disable-blink-features=AutomationControlled')
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
-        
+
+        # مجلد مؤقت فريد (سبب الفشل السابق: استخدام مجلد مشترك)
+        self._user_data_dir = tempfile.mkdtemp(prefix='uc_chrome_')
+        options.add_argument(f'--user-data-dir={self._user_data_dir}')
+
+        # بروكسي اختياري
+        if proxy:
+            options.add_argument(f'--proxy-server={proxy}')
+
+        # محاولة undetected-chromedriver أولاً
         try:
             import undetected_chromedriver as uc
-            self.driver = uc.Chrome(options=options)
-        except ImportError:
+            self.driver = uc.Chrome(options=options, use_subprocess=True)
+        except Exception as e:
+            logger.warning(f"⚠️ uc.Chrome failed: {e}. Falling back to plain Chrome.")
             self.driver = webdriver.Chrome(options=options)
-        
+
+        # إخفاء navigator.webdriver
         self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
             'source': '''
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined
-                });
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+                Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
             '''
         })
-        
+
         self.driver.set_page_load_timeout(60)
         self.driver.get(url)
         return self.driver
 
     def click_ads(self, ad_selectors=None):
-        client = BrowserStackClient('', '')
-        client.driver = self.driver
-        return client.click_ads(ad_selectors)
+        return BrowserStackClient._click_ads_impl(self, ad_selectors)
 
     def fill_form(self, form_data=None, form_selectors=None):
-        client = BrowserStackClient('', '')
-        client.driver = self.driver
-        return client.fill_form(form_data, form_selectors)
+        return BrowserStackClient._fill_form_impl(self, form_data, form_selectors)
 
     def scroll_page(self, scroll_count=5):
-        client = BrowserStackClient('', '')
-        client.driver = self.driver
-        return client.scroll_page(scroll_count)
-
-    def wait_for_page_load(self, timeout=30):
-        client = BrowserStackClient('', '')
-        client.driver = self.driver
-        return client.wait_for_page_load(timeout)
-
-    def take_screenshot(self, filename=None):
-        if not filename:
-            filename = f"screenshot_{int(time.time())}.png"
-        self.driver.save_screenshot(filename)
-        return filename
-
-    def get_page_source(self):
-        return self.driver.page_source
+        for _ in range(scroll_count):
+            self.driver.execute_script("window.scrollBy(0, window.innerHeight);")
+            time.sleep(random.uniform(1, 2))
 
     def close(self):
         if self.driver:
-            self.driver.quit()
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+            finally:
+                self.driver = None
