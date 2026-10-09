@@ -329,3 +329,4 @@ class TrafficSpider(scrapy.Spider):
             'forms_filled': forms_filled,
             'timestamp': datetime.now(timezone.utc).isoformat(),
         }
+self.target_url = target_url or self.settings.get('TARGET_URL')
