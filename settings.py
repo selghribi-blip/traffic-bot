@@ -22,8 +22,7 @@ AUTOTHROTTLE_DEBUG = False
 
 # ---------------- Retries ----------------
 RETRY_ENABLED = True
-RETRY_TIMES = 2
-# ⚠️ مهم: لا تضع 302 هنا (302 redirect طبيعي)
+RETRY_TIMES = 1
 RETRY_HTTP_CODES = [500, 502, 503, 504, 522, 524, 408, 429]
 
 DOWNLOAD_TIMEOUT = 45
@@ -42,14 +41,12 @@ ADDONS = {}
 # ---------------- Downloader Middlewares ----------------
 DOWNLOADER_MIDDLEWARES = {
     'middlewares.fingerprint_rotator.FingerprintRotatorMiddleware': 542,
-    'middlewares.proxy_rotator.FreeProxyRotatorMiddleware': 543,
+    'middlewares.proxy_rotator.FreeProxyRotatorMiddleware': 555,
 }
 
 # ---------------- Redirects ----------------
 REDIRECT_ENABLED = True
 REDIRECT_MAX_TIMES = 3
-
-# ⚠️ اسمح بمرور 302/403/429 إلى العنكبوت (للتعامل معها يدويًا)
 HTTPERROR_ALLOWED_CODES = [302, 403, 429]
 
 # ---------------- Proxies ----------------
@@ -65,10 +62,10 @@ MONGODB_URI = os.environ.get('MONGODB_URI', '')
 MONGODB_DATABASE = 'traffic_bot'
 
 # ---------------- CloseSpider ----------------
-CLOSESPIDER_PAGECOUNT = 50
-CLOSESPIDER_ITEMCOUNT = 100
+CLOSESPIDER_PAGECOUNT = 200
+CLOSESPIDER_ITEMCOUNT = 500
 CLOSESPIDER_ERRORCOUNT = 100
-CLOSESPIDER_TIMEOUT = 600
+CLOSESPIDER_TIMEOUT = 1800
 
 EXTENSIONS = {
     'scrapy.extensions.closespider.CloseSpider': 500,
@@ -97,7 +94,7 @@ DEFAULT_REQUEST_HEADERS = {
 }
 
 # ---------------- Depth ----------------
-DEPTH_LIMIT = 3
+DEPTH_LIMIT = 5
 DEPTH_STATS_VERBOSE = True
 DEPTH_PRIORITY = 1
 
