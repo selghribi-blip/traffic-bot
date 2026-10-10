@@ -1,11 +1,12 @@
 scrapy>=2.11.0,<2.13.0
+PySocks>=1.7.1
 Twisted==25.5.0
+w3lib==2.3.1
 pymongo>=4.6.0
 selenium>=4.18.0
 undetected-chromedriver>=3.5.0
-requests>=2.31.0
+requests[socks]>=2.31.0
 python-dotenv>=1.0.0
 browserstack-local>=1.0.0
 lxml>=4.9.0
 cssselect>=1.2.0
-w3lib==2.3.1
