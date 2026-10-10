@@ -1,17 +1,11 @@
 # middlewares/proxy_rotator.py
 """
-Proxy Rotator Middleware — Production-Ready
-============================================
-يجلب البروكسيات من مصادر موثوقة، يدعم قائمة يدوية،
-يُدير الفشل بذكاء، ويدعم صيغ متعددة.
-
-صيغ البروكسي المدعومة:
-  - ip:port                          → http://ip:port
-  - ip:port:user:pass                → http://user:pass@ip:port
-  - user:pass@ip:port                → http://user:pass@ip:port
-  - protocol://ip:port               → protocol://ip:port
-  - protocol://user:pass@ip:port     → protocol://user:pass@ip:port
-  - socks5://ip:port                 → socks5://ip:port
+Proxy Rotator — Supports HTTP + SOCKS4 + SOCKS5
+================================================
+- يجلب من مصادر موثوقة (HTTP).
+- يدعم قائمة يدوية بصيغ متعددة (HTTP/SOCKS).
+- يدعم تحويل الصيغة تلقائيًا.
+- Health-check موازي + حذف فوري للبروكسي الميت.
 """
 import os
 import re
@@ -19,7 +13,6 @@ import random
 import logging
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urlparse
 
 from scrapy import signals
 from scrapy.exceptions import NotConfigured
@@ -28,28 +21,28 @@ logger = logging.getLogger(__name__)
 
 
 class FreeProxyRotatorMiddleware:
-    # ---------- مصادر موثوقة ومحدَّثة ----------
-    PROXY_SOURCES = [
-        # 1) dinoz0rg — 5,860 بروكسي مُتحقَّق منه
+    # ---------- مصادر HTTP الافتراضية ----------
+    HTTP_SOURCES = [
         'https://raw.githubusercontent.com/dinoz0rg/proxy-list/main/checked_proxies/http.txt',
-        # 2) proxifly — 48,585 بروكسي (تحديث كل 5 دقائق)
         'https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/http/data.txt',
-        # 3) Thordata — verified + GeoIP + latency tiers
         'https://raw.githubusercontent.com/Thordata/awesome-free-proxy-list/main/proxies/top-trusted.txt',
-        # 4) xyzs996 — 6,609 بروكسي (تحديث كل 30 دقيقة)
         'https://raw.githubusercontent.com/xyzs996/free-proxy-health-list/main/proxies/protocols/http/data.txt',
-        # 5) databay-labs — تحديث كل 5 دقائق
         'https://raw.githubusercontent.com/databay-labs/free-proxy-list/master/http.txt',
-        # 6) proxy-free — متعدد البروتوكولات
-        'https://raw.githubusercontent.com/proxy-free/free-proxy-list/main/socks5.txt',
     ]
 
-    # ---------- إعدادات ----------
-    MAX_FAILURES = 2              # حذف بعد فشلين
-    PROXY_TIMEOUT = 20            # بروكسي أبطأ من 20s = ميت
+    # ---------- إعدادات مُحسَّنة ----------
+    MAX_FAILURES = 1
+    MAX_SWAPS_PER_REQUEST = 3
+    PROXY_TIMEOUT = 15
     HEALTHCHECK_URL = 'http://httpbin.org/ip'
-    HEALTHCHECK_TIMEOUT = 5
+    HEALTHCHECK_TIMEOUT = 8
     HEALTHCHECK_WORKERS = 50
+    HEALTHCHECK_SAMPLE = 300
+
+    # ---------- Regex للتحقق من الصيغ ----------
+    RE_HTTP = re.compile(r'^\d{1,3}(\.\d{1,3}){3}:\d{1,5}$')
+    RE_AUTH = re.compile(r'^[\w\-]+:[\w\-]+@\d{1,3}(\.\d{1,3}){3}:\d{1,5}$')
+    RE_4PARTS = re.compile(r'^\d{1,3}(\.\d{1,3}){3}:\d{1,5}:\w+:\w+$')
 
     def __init__(self, proxies, healthcheck=False):
         self.proxies = list(proxies)
@@ -57,16 +50,19 @@ class FreeProxyRotatorMiddleware:
         self.used = 0
         self.dead_removed = 0
         self.healthcheck_enabled = healthcheck
-        self.verified = []
+        # فصل HTTP عن SOCKS للإحصاءات
+        self.count_http = sum(1 for p in self.proxies if self._scheme(p) == 'http')
+        self.count_socks = len(self.proxies) - self.count_http
 
+    # ============================================================
+    # INIT
+    # ============================================================
     @classmethod
     def from_crawler(cls, crawler):
-        # 1) تعطيل كامل عبر env
         if os.environ.get('DISABLE_PROXIES', 'false').lower() == 'true':
-            logger.warning("⛔ Proxies DISABLED via DISABLE_PROXIES env")
+            logger.warning("⛔ Proxies DISABLED via env")
             raise NotConfigured("Disabled by env")
 
-        # 2) اجمع من: manual file + env + remote sources
         proxies = set()
 
         # (أ) بروكسيات يدوية من ملف
@@ -79,17 +75,16 @@ class FreeProxyRotatorMiddleware:
                         proxies.add(line)
             logger.info(f"📁 Loaded {len(proxies)} manual proxies from {manual_file}")
 
-        # (ب) بروكسيات يدوية من env (فاصلة أو سطر جديد)
+        # (ب) من env
         manual_env = os.environ.get('MANUAL_PROXIES', '')
         if manual_env:
             for p in re.split(r'[,\n]', manual_env):
                 p = p.strip()
                 if p:
                     proxies.add(p)
-            logger.info(f"📁 Loaded manual proxies from MANUAL_PROXIES env")
 
-        # (ج) بروكسيات من مصادر بعيدة
-        remote_urls = crawler.settings.getlist('FREE_PROXY_LIST_URL') or cls.PROXY_SOURCES
+        # (ج) مصادر HTTP بعيدة
+        remote_urls = crawler.settings.getlist('FREE_PROXY_LIST_URL') or cls.HTTP_SOURCES
         for url in remote_urls:
             try:
                 r = requests.get(url, timeout=15)
@@ -97,7 +92,7 @@ class FreeProxyRotatorMiddleware:
                 count = 0
                 for line in r.text.splitlines():
                     line = line.strip()
-                    if line and not line.startswith('#'):
+                    if line and not line.startswith('#') and ':' in line:
                         proxies.add(line)
                         count += 1
                 logger.info(f"🌐 {url.split('/')[4]}: {count} proxies")
@@ -110,20 +105,26 @@ class FreeProxyRotatorMiddleware:
         proxies = list(proxies)
         random.shuffle(proxies)
 
-        # 3) فحص حياة اختياري
+        # Health-check
         healthcheck = os.environ.get('PROXY_HEALTHCHECK', 'false').lower() == 'true'
         if healthcheck:
             proxies = cls._filter_alive(proxies)
 
         mw = cls(proxies, healthcheck)
         crawler.signals.connect(mw.spider_closed, signal=signals.spider_closed)
-        logger.info(f"✅ ProxyRotator ready: {len(mw.proxies)} proxies")
+        logger.info(
+            f"✅ ProxyRotator ready: {len(mw.proxies)} proxies "
+            f"(HTTP: {mw.count_http}, SOCKS: {mw.count_socks})"
+        )
         return mw
 
+    # ============================================================
+    # HEALTHCHECK
+    # ============================================================
     @staticmethod
-    def _filter_alive(proxies, sample=200):
-        """يفحص عينة عشوائية من البروكسيات ويرجع الحية فقط."""
-        sample_list = random.sample(proxies, min(sample, len(proxies)))
+    def _filter_alive(proxies):
+        sample_size = min(FreeProxyRotatorMiddleware.HEALTHCHECK_SAMPLE, len(proxies))
+        sample_list = random.sample(proxies, sample_size)
         alive = []
 
         def check(proxy_str):
@@ -131,6 +132,7 @@ class FreeProxyRotatorMiddleware:
                 url = FreeProxyRotatorMiddleware._format_proxy(proxy_str)
                 if not url:
                     return None
+                # requests يدعم SOCKS عبر PySocks
                 r = requests.get(
                     FreeProxyRotatorMiddleware.HEALTHCHECK_URL,
                     proxies={'http': url, 'https': url},
@@ -142,35 +144,55 @@ class FreeProxyRotatorMiddleware:
                 pass
             return None
 
-        logger.info(f"🔍 Health-checking {len(sample_list)} proxies...")
-        with ThreadPoolExecutor(max_workers=FreeProxyRotatorMiddleware.HEALTHCHECK_WORKERS) as ex:
+        logger.info(f"🔍 Health-checking {sample_size} proxies...")
+        with ThreadPoolExecutor(
+            max_workers=FreeProxyRotatorMiddleware.HEALTHCHECK_WORKERS
+        ) as ex:
             futures = {ex.submit(check, p): p for p in sample_list}
             for fut in as_completed(futures):
                 res = fut.result()
                 if res:
                     alive.append(res)
 
-        logger.info(f"✅ Alive: {len(alive)}/{len(sample_list)}")
+        logger.info(f"✅ Alive: {len(alive)}/{sample_size}")
         return alive or sample_list
 
-    # ---------- تحويل الصيغ ----------
+    # ============================================================
+    # FORMAT PROXY (يدعم HTTP + SOCKS)
+    # ============================================================
+    @staticmethod
+    def _scheme(raw: str) -> str:
+        """يرجع scheme البروكسي."""
+        raw = raw.strip()
+        if '://' in raw:
+            return raw.split('://', 1)[0].lower()
+        # افتراضيًا HTTP
+        return 'http'
+
     @staticmethod
     def _format_proxy(raw: str) -> str:
         """
         يحوّل أي صيغة إلى URL صالح لـ Scrapy.
-        يدعم: ip:port | ip:port:user:pass | user:pass@ip:port | scheme://...
+        الصيغ المدعومة:
+          ip:port                          → http://ip:port
+          ip:port:user:pass                → http://user:pass@ip:port
+          user:pass@ip:port                → http://user:pass@ip:port
+          http://ip:port                   → http://ip:port
+          socks4://ip:port                 → socks4://ip:port
+          socks5://ip:port                 → socks5://ip:port
+          socks5://user:pass@ip:port       → socks5://user:pass@ip:port
+          socks5h://ip:port                → socks5h://ip:port (DNS remote)
         """
         raw = raw.strip()
         if not raw:
             return None
 
-        # إذا يحوي scheme مسبقًا
+        # إذا يحوي scheme مسبقًا → أرجعه كما هو
         if '://' in raw:
             return raw
 
-        parts = raw.split(':')
-
         # ip:port
+        parts = raw.split(':')
         if len(parts) == 2:
             return f"http://{parts[0]}:{parts[1]}"
 
@@ -187,11 +209,18 @@ class FreeProxyRotatorMiddleware:
         # احتياطي
         return f"http://{raw}"
 
-    # ---------- Request ----------
+    # ============================================================
+    # REQUEST
+    # ============================================================
     def process_request(self, request, spider):
         if request.meta.get('proxy'):
             return None
         if not self.proxies:
+            return None
+
+        # حد 3 تبديلات
+        swaps = request.meta.get('_proxy_swaps', 0)
+        if swaps >= self.MAX_SWAPS_PER_REQUEST:
             return None
 
         chosen = random.choice(self.proxies)
@@ -201,11 +230,14 @@ class FreeProxyRotatorMiddleware:
 
         request.meta['proxy'] = formatted
         request.meta['_raw_proxy'] = chosen
+        request.meta['_proxy_swaps'] = swaps + 1
         request.meta['download_timeout'] = self.PROXY_TIMEOUT
         self.used += 1
         return None
 
-    # ---------- Response ----------
+    # ============================================================
+    # RESPONSE
+    # ============================================================
     def process_response(self, request, response, spider):
         raw = request.meta.get('_raw_proxy')
         if not raw:
@@ -222,17 +254,18 @@ class FreeProxyRotatorMiddleware:
             retry.meta.pop('_raw_proxy', None)
             retry.dont_filter = True
             return retry
-
         return response
 
-    # ---------- Exception ----------
+    # ============================================================
+    # EXCEPTION
+    # ============================================================
     def process_exception(self, request, exception, spider):
         raw = request.meta.get('_raw_proxy')
         if not raw:
             return None
 
         self._mark_failure(raw)
-        logger.debug(f"💀 Proxy failed: {raw} ({exception.__class__.__name__})")
+        logger.debug(f"💀 {raw} ({exception.__class__.__name__})")
 
         retry = request.copy()
         retry.meta['proxy'] = None
@@ -249,5 +282,6 @@ class FreeProxyRotatorMiddleware:
 
     def spider_closed(self, spider):
         logger.info(
-            f"📊 Proxies | used={self.used} | removed={self.dead_removed} | alive={len(self.proxies)}"
+            f"📊 Proxies | used={self.used} | removed={self.dead_removed} | "
+            f"alive={len(self.proxies)}"
         )
