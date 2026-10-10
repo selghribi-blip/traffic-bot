@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       target_url:
-        description: 'Override target URL (leave empty for default from Variables)'
+        description: 'Override target URL'
         required: false
         default: ''
       run_mode:
@@ -14,13 +14,9 @@ on:
         required: false
         default: 'both'
         type: choice
-        options:
-          - both
-          - scrapy
-          - browserstack
-          - local
+        options: [both, scrapy, browserstack, local]
       use_browserstack:
-        description: 'Use BrowserStack (true/false)'
+        description: 'Use BrowserStack'
         required: false
         default: 'true'
 
@@ -28,16 +24,7 @@ permissions:
   actions: write
   contents: read
 
-# ============================================================
-# TARGET_URL priority:
-#   1) github.event.inputs.target_url   (manual override)
-#   2) vars.TARGET_URL                  (Repository Variable)
-#   3) 'https://www.forjo.tech/'        (fallback)
-# ============================================================
-
 jobs:
-  # ============================================================
-  # 1) SCRAPY SPIDER
   # ============================================================
   run-scrapy-spider:
     name: Run Scrapy Spider
@@ -58,34 +45,36 @@ jobs:
       - name: Install Python deps
         run: |
           pip install --upgrade pip
-          pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1'
+          pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1' 'PySocks>=1.7.1'
           pip install --no-cache-dir -r requirements.txt
           echo "=== Installed versions ==="
-          pip show Twisted w3lib scrapy | grep -E "Name|Version"
+          pip show Twisted w3lib scrapy PySocks | grep -E "Name|Version"
 
       - name: Verify dependencies
         run: |
           python -c "import twisted; print('Twisted:', twisted.__version__)"
-          python -c "from twisted.internet._sslverify import _setAcceptableProtocols; print('✅ _setAcceptableProtocols OK')"
-          python -c "import w3lib; print('w3lib:', w3lib.__version__)"
-          python -c "from w3lib.url import _safe_chars; print('✅ _safe_chars OK')"
-          python -c "import scrapy; print('Scrapy:', scrapy.__version__)"
+          python -c "from twisted.internet._sslverify import _setAcceptableProtocols; print('✅ SSL protocols OK')"
+          python -c "from w3lib.url import _safe_chars; print('✅ w3lib OK')"
+          python -c "import socks; print('✅ PySocks:', socks.__version__)"
+          python -c "import scrapy; print('✅ Scrapy:', scrapy.__version__)"
 
       - name: Debug env
         env:
           TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
         run: |
-          echo "TARGET_URL length: ${#TARGET_URL}"
-          echo "TARGET_URL value: $TARGET_URL"
+          echo "TARGET_URL: $TARGET_URL"
           echo "MONGODB set: ${{ secrets.MONGODB_URI != '' }}"
+          echo "Manual proxies file:"
+          wc -l manual_proxies.txt 2>/dev/null || echo "not found"
 
       - name: Run Scrapy spider
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
+          MANUAL_PROXY_FILE: 'manual_proxies.txt'
           PROXY_HEALTHCHECK: 'true'
           DISABLE_PROXIES: 'false'
-          # MANUAL_PROXIES: '1.2.3.4:8080,5.6.7.8:3128:user:pass'
+          FETCH_REMOTE_PROXIES: 'false'
         run: |
           scrapy crawl traffic_bot \
             -a target_url="${TARGET_URL}" \
@@ -101,8 +90,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # ============================================================
-  # 2) BROWSERSTACK SPIDER
   # ============================================================
   run-browserstack-spider:
     name: Run BrowserStack Spider
@@ -123,16 +110,13 @@ jobs:
       - name: Install Python deps
         run: |
           pip install --upgrade pip
-          pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1'
+          pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1' 'PySocks>=1.7.1'
           pip install --no-cache-dir -r requirements.txt
-          echo "=== Installed versions ==="
-          pip show Twisted w3lib scrapy | grep -E "Name|Version"
 
       - name: Verify dependencies
         run: |
-          python -c "import twisted; print('Twisted:', twisted.__version__)"
-          python -c "from twisted.internet._sslverify import _setAcceptableProtocols; print('✅ _setAcceptableProtocols OK')"
-          python -c "from w3lib.url import _safe_chars; print('✅ _safe_chars OK')"
+          python -c "from twisted.internet._sslverify import _setAcceptableProtocols; print('✅ SSL OK')"
+          python -c "import socks; print('✅ PySocks OK')"
 
       - name: Run BrowserStack spider
         env:
@@ -158,8 +142,6 @@ jobs:
           retention-days: 7
 
   # ============================================================
-  # 3) LOCAL BROWSER SPIDER
-  # ============================================================
   run-local-browser-spider:
     name: Run Local Browser Spider
     if: |
@@ -176,7 +158,7 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install Chrome (pinned)
+      - name: Install Chrome
         run: |
           sudo apt-get update
           sudo apt-get install -y wget unzip
@@ -187,17 +169,9 @@ jobs:
       - name: Install Python deps
         run: |
           pip install --upgrade pip
-          pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1'
+          pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1' 'PySocks>=1.7.1'
           pip install --no-cache-dir -r requirements.txt
           pip install undetected-chromedriver
-          echo "=== Installed versions ==="
-          pip show Twisted w3lib scrapy | grep -E "Name|Version"
-
-      - name: Verify dependencies
-        run: |
-          python -c "import twisted; print('Twisted:', twisted.__version__)"
-          python -c "from twisted.internet._sslverify import _setAcceptableProtocols; print('✅ _setAcceptableProtocols OK')"
-          python -c "from w3lib.url import _safe_chars; print('✅ _safe_chars OK')"
 
       - name: Run Local Browser spider
         env:
@@ -220,8 +194,6 @@ jobs:
           retention-days: 7
 
   # ============================================================
-  # 4) AGGREGATE RESULTS
-  # ============================================================
   aggregate-results:
     name: Aggregate Results
     needs: [run-scrapy-spider, run-browserstack-spider, run-local-browser-spider]
@@ -229,8 +201,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
@@ -251,7 +222,6 @@ jobs:
 
           cat << 'PYEOF' > aggregate.py
           import sys, json
-
           try:
               content = sys.stdin.read().strip()
               if not content:
@@ -260,21 +230,18 @@ jobs:
                   data = json.loads(content)
               else:
                   data = [json.loads(line) for line in content.split('\n') if line.strip()]
-
               visits = [d for d in data if d.get('type') in ['visit', 'browserstack_visit']]
               ad_clicks = [d for d in data if d.get('type') == 'ad_click']
               form_submits = [d for d in data if d.get('type') == 'form_submit']
-
               total_visits = len(visits)
               total_ads = sum(v.get('ads_clicked', 0) for v in visits) + len(ad_clicks)
               total_forms = sum(v.get('forms_filled', 0) for v in visits) + len(form_submits)
-
               print(f'Visits: {total_visits}')
               print(f'Ads Clicked: {total_ads}')
               print(f'Forms Filled: {total_forms}')
               print(f'Status: {visits[0].get("status", "N/A") if visits else "N/A"}')
           except Exception as e:
-              print(f"Notice: Could not parse results ({e})")
+              print(f"Notice: {e}")
           PYEOF
 
           for file in artifacts/*/*.json; do
@@ -315,19 +282,15 @@ jobs:
           import os, json, glob
           from pymongo import MongoClient
           from datetime import datetime, timezone
-
           uri = os.getenv('MONGODB_URI', '').strip()
           if not uri:
-              print("MongoDB Notice: MONGODB_URI is empty, skipping")
+              print("MongoDB: empty URI, skipping")
               raise SystemExit(0)
-
           try:
               client = MongoClient(uri, serverSelectionTimeoutMS=5000)
               db = client['traffic_bot']
               sessions = db['sessions']
-
               total_visits = total_ads = total_forms = 0
-
               for f in glob.glob('artifacts/*/*.json'):
                   try:
                       with open(f) as fh:
@@ -341,7 +304,6 @@ jobs:
                                   total_forms += d.get('forms_filled', 0)
                   except Exception:
                       pass
-
               sessions.insert_one({
                   'run_id': '${{ github.run_id }}',
                   'run_number': ${{ github.run_number }},
@@ -358,8 +320,6 @@ jobs:
           PYEOF
           python3 mongo_log.py
 
-  # ============================================================
-  # 5) CLEANUP
   # ============================================================
   cleanup:
     name: Cleanup Old Runs
