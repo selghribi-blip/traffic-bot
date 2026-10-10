@@ -23,9 +23,10 @@ AUTOTHROTTLE_DEBUG = False
 # ---------------- Retries ----------------
 RETRY_ENABLED = True
 RETRY_TIMES = 2
-RETRY_HTTP_CODES = [500, 502, 503, 504, 522, 524, 408, 429, 302]
+# ⚠️ مهم: لا تضع 302 هنا (302 redirect طبيعي)
+RETRY_HTTP_CODES = [500, 502, 503, 504, 522, 524, 408, 429]
 
-DOWNLOAD_TIMEOUT = 30
+DOWNLOAD_TIMEOUT = 45
 DNS_TIMEOUT = 15
 
 COOKIES_ENABLED = True
@@ -43,6 +44,13 @@ DOWNLOADER_MIDDLEWARES = {
     'middlewares.fingerprint_rotator.FingerprintRotatorMiddleware': 542,
     'middlewares.proxy_rotator.FreeProxyRotatorMiddleware': 543,
 }
+
+# ---------------- Redirects ----------------
+REDIRECT_ENABLED = True
+REDIRECT_MAX_TIMES = 3
+
+# ⚠️ اسمح بمرور 302/403/429 إلى العنكبوت (للتعامل معها يدويًا)
+HTTPERROR_ALLOWED_CODES = [302, 403, 429]
 
 # ---------------- Proxies ----------------
 FREE_PROXY_LIST_URL = []
