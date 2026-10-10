@@ -26,10 +26,11 @@ permissions:
 
 jobs:
   # ============================================================
+  # 1) SCRAPY SPIDER — Manual only
+  # ============================================================
   run-scrapy-spider:
-    name: Run Scrapy Spider
+    name: Run Scrapy Spider (Manual)
     if: |
-      github.event_name == 'schedule' ||
       github.event.inputs.run_mode == 'both' ||
       github.event.inputs.run_mode == 'scrapy'
     runs-on: ubuntu-latest
@@ -72,7 +73,7 @@ jobs:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
           MANUAL_PROXY_FILE: 'manual_proxies.txt'
-          PROXY_HEALTHCHECK: 'true'
+          PROXY_HEALTHCHECK: 'false'
           DISABLE_PROXIES: 'false'
           FETCH_REMOTE_PROXIES: 'true'
         run: |
@@ -90,6 +91,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # ============================================================
+  # 2) BROWSERSTACK SPIDER — Auto + Manual
   # ============================================================
   run-browserstack-spider:
     name: Run BrowserStack Spider
@@ -142,6 +145,8 @@ jobs:
           retention-days: 7
 
   # ============================================================
+  # 3) LOCAL BROWSER SPIDER — Auto + Manual
+  # ============================================================
   run-local-browser-spider:
     name: Run Local Browser Spider
     if: |
@@ -162,7 +167,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y wget unzip xvfb
-          # Chrome for Testing — نسخة ثابتة
           CHROME_VERSION="131.0.6778.87"
           wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip"
           wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip"
@@ -203,6 +207,8 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # ============================================================
+  # 4) AGGREGATE RESULTS
   # ============================================================
   aggregate-results:
     name: Aggregate Results
@@ -330,6 +336,8 @@ jobs:
           PYEOF
           python3 mongo_log.py
 
+  # ============================================================
+  # 5) CLEANUP
   # ============================================================
   cleanup:
     name: Cleanup Old Runs
