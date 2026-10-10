@@ -2,53 +2,39 @@
 import os
 
 BOT_NAME = 'traffic_bot'
-
 SPIDER_MODULES = ['spiders']
 NEWSPIDER_MODULE = 'spiders'
 
-# ---------------- Robots ----------------
 ROBOTSTXT_OBEY = False
-
-# ---------------- Encoding ----------------
 FEED_EXPORT_ENCODING = 'utf-8'
 
 # ---------------- Throttling ----------------
-DOWNLOAD_DELAY = 3
+DOWNLOAD_DELAY = 2
 RANDOMIZE_DOWNLOAD_DELAY = True
-CONCURRENT_REQUESTS = 2
-CONCURRENT_REQUESTS_PER_DOMAIN = 1
+CONCURRENT_REQUESTS = 4
+CONCURRENT_REQUESTS_PER_DOMAIN = 2
 
 AUTOTHROTTLE_ENABLED = True
-AUTOTHROTTLE_START_DELAY = 3
-AUTOTHROTTLE_MAX_DELAY = 15
+AUTOTHROTTLE_START_DELAY = 2
+AUTOTHROTTLE_MAX_DELAY = 10
 AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0
 AUTOTHROTTLE_DEBUG = False
 
 # ---------------- Retries ----------------
 RETRY_ENABLED = True
-RETRY_TIMES = 3
+RETRY_TIMES = 1
 RETRY_HTTP_CODES = [500, 502, 503, 504, 522, 524, 408, 429]
 
-DOWNLOAD_TIMEOUT = 60
-DNS_TIMEOUT = 30
+DOWNLOAD_TIMEOUT = 30
+DNS_TIMEOUT = 15
 
-# ---------------- Cookies ----------------
 COOKIES_ENABLED = True
-COOKIES_DEBUG = False
-
-# ---------------- Console ----------------
 TELNETCONSOLE_ENABLED = False
 
 # ---------------- Logging ----------------
 LOG_LEVEL = 'INFO'
 LOG_FORMAT = '%(asctime)s [%(name)s] %(levelname)s: %(message)s'
 LOG_DATEFORMAT = '%Y-%m-%d %H:%M:%S'
-
-# ==================== Zyte API ====================
-# ملاحظة: تم تعطيل Zyte بالكامل بسبب عدم توافق
-# scrapy-zyte-api مع Scrapy 2.18 (ImportError: create_instance)
-# لا حاجة لـ ZYTE_API_KEY هنا
-# نعتمد على FreeProxyRotator + FingerprintRotator فقط
 
 ADDONS = {}
 
@@ -59,14 +45,8 @@ DOWNLOADER_MIDDLEWARES = {
 }
 
 # ---------------- Proxies ----------------
-FREE_PROXY_LIST_URL = os.environ.get(
-    'FREE_PROXY_LIST_URL',
-    'https://raw.githubusercontent.com/xyzs996/free-proxy-health-list/main/proxies/all/data.txt',
-)
-
-ROTATING_PROXY_PAGE_RETRY_TIMES = 5
-ROTATING_PROXY_BACKOFF_BASE = 300
-ROTATING_PROXY_BACKOFF_CAP = 3600
+FREE_PROXY_LIST_URL = []
+ROTATING_PROXY_PAGE_RETRY_TIMES = 3
 
 # ---------------- Pipelines ----------------
 ITEM_PIPELINES = {
@@ -79,7 +59,8 @@ MONGODB_DATABASE = 'traffic_bot'
 # ---------------- CloseSpider ----------------
 CLOSESPIDER_PAGECOUNT = 50
 CLOSESPIDER_ITEMCOUNT = 100
-CLOSESPIDER_ERRORCOUNT = 30
+CLOSESPIDER_ERRORCOUNT = 100
+CLOSESPIDER_TIMEOUT = 600
 
 EXTENSIONS = {
     'scrapy.extensions.closespider.CloseSpider': 500,
@@ -87,10 +68,6 @@ EXTENSIONS = {
 
 # ---------------- HTTP Cache ----------------
 HTTPCACHE_ENABLED = False
-HTTPCACHE_EXPIRATION_SECS = 3600
-HTTPCACHE_DIR = 'httpcache'
-HTTPCACHE_IGNORE_HTTP_CODES = [500, 502, 503, 504, 400, 401, 403, 404, 408, 429]
-HTTPCACHE_STORAGE = 'scrapy.extensions.httpcache.FilesystemCacheStorage'
 
 # ---------------- Headers ----------------
 USER_AGENT = (
@@ -120,5 +97,5 @@ DEPTH_PRIORITY = 1
 SCHEDULER_DISK_QUEUE = 'scrapy.squeues.PickleFifoDiskQueue'
 SCHEDULER_MEMORY_QUEUE = 'scrapy.squeues.FifoMemoryQueue'
 
-# ---------------- Target URL ----------------
+# ---------------- Target ----------------
 TARGET_URL = os.environ.get('TARGET_URL', 'https://www.forjo.tech/')
