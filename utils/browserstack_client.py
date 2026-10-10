@@ -1,15 +1,14 @@
 # utils/browserstack_client.py
 """
-BrowserStack + Local Browser Client — Fixed
+BrowserStack + Local Browser Client — Final
 ============================================
-- حذف seleniumVersion (غير مدعوم في BrowserStack API الجديد)
-- حذف excludeSwitches/useAutomationExtension (تعارض مع undetected-chromedriver)
-- معالجة أخطاء محسّنة + fallback آمن
+- BrowserStack يعمل (مُختبر).
+- Local Chrome يستخدم Chrome for Testing + chromedriver متطابقين.
+- LocalBrowserClient يستخدم webdriver.Chrome مباشرة (لا uc).
 """
 import os
 import time
 import random
-import tempfile
 import logging
 
 from selenium import webdriver
@@ -17,6 +16,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.common.exceptions import (
     TimeoutException, NoSuchElementException,
     ElementClickInterceptedException, WebDriverException,
@@ -60,11 +60,10 @@ class BrowserStackClient:
         self.driver = None
 
     # ============================================================
-    # BrowserStack
+    # BrowserStack session
     # ============================================================
     def start_session(self, url, browser='chrome', os_name='Windows', os_version='11',
                       proxy=None, use_local=False):
-        """ينشئ جلسة BrowserStack (بدون seleniumVersion)."""
         if not (self.username and self.access_key):
             raise RuntimeError("BrowserStack credentials missing")
 
@@ -72,7 +71,6 @@ class BrowserStackClient:
         options.set_capability('browserName', browser)
         options.set_capability('browserVersion', 'latest')
 
-        # ← لا seleniumVersion — غير مدعوم
         bstack_opts = {
             'os': os_name,
             'osVersion': os_version,
@@ -86,7 +84,6 @@ class BrowserStackClient:
             'userName': self.username,
             'accessKey': self.access_key,
         }
-
         if proxy:
             bstack_opts['proxy'] = proxy
 
@@ -103,7 +100,7 @@ class BrowserStackClient:
         return self.driver
 
     # ============================================================
-    # Common actions (shared by both clients)
+    # Common actions
     # ============================================================
     def click_ads(self, ad_selectors=None):
         selectors = ad_selectors or self.AD_SELECTORS
@@ -241,58 +238,59 @@ class BrowserStackClient:
 
 class LocalBrowserClient(BrowserStackClient):
     """
-    نسخة محلية من Chrome مع anti-detection.
-    ترث كل الأساليب من BrowserStackClient.
+    Chrome محلي يعمل على GitHub Actions.
+    يستخدم Chrome for Testing + chromedriver متطابقين (من bot.yml).
+    لا يستخدم undetected-chromedriver (لا يعمل بشكل موثوق على ubuntu-latest).
     """
 
     def __init__(self):
-        super().__init__()  # لا credentials مطلوبة
+        super().__init__()
         self._user_data_dir = None
 
     def start_session(self, url, headless=True, proxy=None):
-        """ينشئ Chrome محلي بدون excludeSwitches."""
         options = Options()
+
+        # headless للمتصفح في CI
         if headless:
             options.add_argument('--headless=new')
+
+        # ثوابت إلزامية على Linux/CI
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
         options.add_argument('--disable-software-rasterizer')
-        options.add_argument('--disable-extensions')
         options.add_argument('--disable-setuid-sandbox')
         options.add_argument('--window-size=1920,1080')
         options.add_argument('--disable-blink-features=AutomationControlled')
 
-        # ← لا excludeSwitches، لا useAutomationExtension
-
-        # مجلد مؤقت فريد
-        self._user_data_dir = tempfile.mkdtemp(prefix='uc_chrome_')
-        options.add_argument(f'--user-data-dir={self._user_data_dir}')
+        # مسارات ثابتة من bot.yml
+        chrome_bin = os.environ.get('CHROME_BIN', '/usr/local/bin/google-chrome')
+        if os.path.exists(chrome_bin):
+            options.binary_location = chrome_bin
+            logger.info(f"🖥️ Using Chrome binary: {chrome_bin}")
 
         if proxy:
             options.add_argument(f'--proxy-server={proxy}')
 
-        # جرّب undetected-chromedriver أولاً
-        driver = None
+        # استخدم chromedriver من المسار المحدد (متطابق مع Chrome)
+        chromedriver_path = os.environ.get('CHROMEDRIVER_PATH', '/usr/local/bin/chromedriver')
+
         try:
-            import undetected_chromedriver as uc
-            logger.info("🖥️ Trying undetected-chromedriver")
-            driver = uc.Chrome(options=options, use_subprocess=True)
-            logger.info("✅ undetected-chromedriver started")
+            if os.path.exists(chromedriver_path):
+                logger.info(f"🖥️ Using ChromeDriver: {chromedriver_path}")
+                service = Service(executable_path=chromedriver_path)
+                self.driver = webdriver.Chrome(service=service, options=options)
+            else:
+                logger.info("🖥️ Using auto-detected ChromeDriver")
+                self.driver = webdriver.Chrome(options=options)
+
+            logger.info("✅ Chrome started successfully")
+
         except Exception as e:
-            logger.warning(f"⚠️ uc.Chrome failed: {e}")
-            # Fallback: Selenium العادي
-            try:
-                logger.info("🖥️ Falling back to plain Chrome")
-                driver = webdriver.Chrome(options=options)
-                logger.info("✅ Plain Chrome started")
-            except Exception as e2:
-                logger.error(f"❌ Plain Chrome failed too: {e2}")
-                raise
+            logger.error(f"❌ Chrome failed: {e}")
+            raise
 
-        self.driver = driver
-
-        # إخفاء webdriver (يعمل مع الحالتين)
+        # إخفاء webdriver
         try:
             self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
                 'source': '''
@@ -306,4 +304,5 @@ class LocalBrowserClient(BrowserStackClient):
 
         self.driver.set_page_load_timeout(60)
         self.driver.get(url)
+        self.wait_for_page_load(timeout=30)
         return self.driver
