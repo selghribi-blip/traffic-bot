@@ -64,7 +64,7 @@ jobs:
         run: |
           echo "TARGET_URL: $TARGET_URL"
           echo "MONGODB set: ${{ secrets.MONGODB_URI != '' }}"
-          echo "Manual proxies file:"
+          echo "Manual proxies:"
           wc -l manual_proxies.txt 2>/dev/null || echo "not found"
 
       - name: Run Scrapy spider
@@ -74,7 +74,7 @@ jobs:
           MANUAL_PROXY_FILE: 'manual_proxies.txt'
           PROXY_HEALTHCHECK: 'true'
           DISABLE_PROXIES: 'false'
-          FETCH_REMOTE_PROXIES: 'false'
+          FETCH_REMOTE_PROXIES: 'true'
         run: |
           scrapy crawl traffic_bot \
             -a target_url="${TARGET_URL}" \
@@ -158,27 +158,37 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install Chrome
+      - name: Install Chrome + ChromeDriver (matched versions)
         run: |
           sudo apt-get update
-          sudo apt-get install -y wget unzip
-          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt-get -fy install
-          google-chrome --version
+          sudo apt-get install -y wget unzip xvfb
+          # Chrome for Testing — نسخة ثابتة
+          CHROME_VERSION="131.0.6778.87"
+          wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip"
+          wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip"
+          unzip -q chrome-linux64.zip
+          unzip -q chromedriver-linux64.zip
+          sudo mv chrome-linux64 /opt/chrome
+          sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
+          sudo chmod +x /usr/local/bin/chromedriver
+          sudo ln -sf /opt/chrome/chrome /usr/local/bin/google-chrome
+          /usr/local/bin/google-chrome --version
+          /usr/local/bin/chromedriver --version
 
       - name: Install Python deps
         run: |
           pip install --upgrade pip
           pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1' 'PySocks>=1.7.1'
           pip install --no-cache-dir -r requirements.txt
-          pip install undetected-chromedriver
 
       - name: Run Local Browser spider
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
+          CHROME_BIN: '/usr/local/bin/google-chrome'
+          CHROMEDRIVER_PATH: '/usr/local/bin/chromedriver'
         run: |
-          scrapy crawl browserstack_bot \
+          xvfb-run -a scrapy crawl browserstack_bot \
             -a target_url="${TARGET_URL}" \
             -a use_browserstack="false" \
             -O local_results.json \
