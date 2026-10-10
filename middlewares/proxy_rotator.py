@@ -1,20 +1,17 @@
 # middlewares/proxy_rotator.py
 """
-Smart Proxy Rotator — Fixed
-============================
-- Healthcheck ذكي حسب نوع البروكسي:
-    * SOCKS4 → يفحص HTTP
-    * SOCKS5/h → يفحص HTTPS
-- يجلب HTTP من مصادر بعيدة (fallback).
-- يميّز Google CAPTCHA ويعتبره فشل.
-- يختار pool مناسب حسب scheme الطلب.
+Proxy Rotator — Final Optimized
+================================
+- لا Health-check (يعتمد على الحذف الديناميكي).
+- لا يستخدم SOCKS4 لـ HTTPS (يسبب timeout).
+- يعامل Google CAPTCHA كفشل فوري.
+- يجلب HTTP من مصادر متعددة كـ fallback.
 """
 import os
 import re
 import random
 import logging
 import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 
 from scrapy import signals
@@ -28,20 +25,12 @@ class FreeProxyRotatorMiddleware:
         'https://raw.githubusercontent.com/xyzs996/free-proxy-health-list/main/proxies/protocols/http/data.txt',
         'https://raw.githubusercontent.com/dinoz0rg/proxy-list/main/checked_proxies/http.txt',
         'https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/http/data.txt',
-        'https://raw.githubusercontent.com/Thordata/awesome-free-proxy-list/main/proxies/top-trusted.txt',
     ]
 
-    # إعدادات
     MAX_FAILURES = 2
-    MAX_SWAPS_PER_REQUEST = 4
+    MAX_SWAPS_PER_REQUEST = 5
     PROXY_TIMEOUT = 25
-    HEALTHCHECK_HTTP_URL = 'http://httpbin.org/ip'
-    HEALTHCHECK_HTTPS_URL = 'https://httpbin.org/ip'
-    HEALTHCHECK_TIMEOUT = 10
-    HEALTHCHECK_WORKERS = 30
-    HEALTHCHECK_SAMPLE = 300
 
-    # كشف Google CAPTCHA
     GOOGLE_CAPTCHA_PATTERNS = [
         'google.com/sorry',
         '/sorry/index',
@@ -62,6 +51,7 @@ class FreeProxyRotatorMiddleware:
         self.failures = {}
         self.used_by_pool = {k: 0 for k in self.pools}
         self.dead_removed = {k: 0 for k in self.pools}
+        self.captcha_hits = 0
 
         logger.info(
             f"📊 Pools → SOCKS4: {len(self.pools['socks4'])} | "
@@ -76,7 +66,7 @@ class FreeProxyRotatorMiddleware:
 
         proxies = set()
 
-        # (أ) ملف يدوي (SOCKS)
+        # ملف يدوي
         manual_file = os.environ.get('MANUAL_PROXY_FILE', 'manual_proxies.txt')
         if os.path.isfile(manual_file):
             with open(manual_file, 'r', encoding='utf-8') as f:
@@ -86,7 +76,7 @@ class FreeProxyRotatorMiddleware:
                         proxies.add(line)
             logger.info(f"📁 Manual proxies: {len(proxies)}")
 
-        # (ب) env
+        # env
         manual_env = os.environ.get('MANUAL_PROXIES', '').strip()
         if manual_env:
             for p in re.split(r'[,\n]', manual_env):
@@ -94,7 +84,7 @@ class FreeProxyRotatorMiddleware:
                 if p:
                     proxies.add(p)
 
-        # (ج) مصادر HTTP (مهم جداً — fallback)
+        # مصادر HTTP
         if os.environ.get('FETCH_REMOTE_PROXIES', 'true').lower() == 'true':
             for url in cls.HTTP_SOURCES:
                 try:
@@ -116,76 +106,11 @@ class FreeProxyRotatorMiddleware:
         proxies = list(proxies)
         random.shuffle(proxies)
 
-        # Healthcheck
-        healthcheck = os.environ.get('PROXY_HEALTHCHECK', 'false').lower() == 'true'
-        if healthcheck:
-            proxies = cls._filter_alive(proxies)
-
+        # لا Health-check (يعتمد على الحذف الديناميكي)
         mw = cls(proxies)
         crawler.signals.connect(mw.spider_closed, signal=signals.spider_closed)
         return mw
 
-    # ============================================================
-    # HEALTHCHECK — ذكي حسب نوع البروكسي
-    # ============================================================
-    @classmethod
-    def _filter_alive(cls, proxies):
-        sample_size = min(cls.HEALTHCHECK_SAMPLE, len(proxies))
-        sample_list = random.sample(proxies, sample_size)
-
-        # فصل العينات حسب النوع
-        socks4 = [p for p in sample_list if cls._scheme(p) in ('socks4', 'socks4a')]
-        socks5 = [p for p in sample_list if cls._scheme(p) in ('socks5', 'socks5h')]
-        https_like = [p for p in sample_list if cls._scheme(p) == 'http']
-
-        alive = []
-
-        # SOCKS4 → HTTP healthcheck
-        if socks4:
-            logger.info(f"🔍 Checking {len(socks4)} SOCKS4 via HTTP...")
-            alive += cls._check_batch(socks4, cls.HEALTHCHECK_HTTP_URL)
-
-        # SOCKS5/h + HTTP → HTTPS healthcheck (أهم)
-        https_test = socks5 + https_like
-        if https_test:
-            logger.info(f"🔍 Checking {len(https_test)} via HTTPS...")
-            alive += cls._check_batch(https_test, cls.HEALTHCHECK_HTTPS_URL)
-
-        logger.info(f"✅ Alive: {len(alive)}/{sample_size}")
-        return alive or sample_list
-
-    @classmethod
-    def _check_batch(cls, proxy_list, test_url):
-        alive = []
-
-        def check(proxy_str):
-            try:
-                url = cls._format_proxy(proxy_str)
-                if not url:
-                    return None
-                r = requests.get(
-                    test_url,
-                    proxies={'http': url, 'https': url},
-                    timeout=cls.HEALTHCHECK_TIMEOUT,
-                )
-                if r.status_code == 200:
-                    return proxy_str
-            except Exception:
-                pass
-            return None
-
-        with ThreadPoolExecutor(max_workers=cls.HEALTHCHECK_WORKERS) as ex:
-            futures = {ex.submit(check, p): p for p in proxy_list}
-            for fut in as_completed(futures):
-                res = fut.result()
-                if res:
-                    alive.append(res)
-
-        return alive
-
-    # ============================================================
-    # HELPERS
-    # ============================================================
     @staticmethod
     def _scheme(raw: str) -> str:
         raw = raw.strip().lower()
@@ -215,20 +140,27 @@ class FreeProxyRotatorMiddleware:
         url = response.url.lower()
         return any(p in url for p in self.GOOGLE_CAPTCHA_PATTERNS)
 
-    def _pick_pool_for_url(self, url: str) -> str:
+    def _pick_pool_for_url(self, url: str):
+        """
+        يختار pool مناسب:
+          - HTTP scheme: socks4 → http → socks5
+          - HTTPS scheme: socks5 → http (لا socks4!)
+        """
         scheme = urlparse(url).scheme.lower()
-        if scheme == 'http' and self.pools['socks4']:
-            return 'socks4'
-        if scheme == 'https' and self.pools['socks5']:
-            return 'socks5'
-        for name in ('socks5', 'socks4', 'http'):
-            if self.pools[name]:
-                return name
+
+        if scheme == 'http':
+            # HTTP: socks4 مناسب
+            for name in ('socks4', 'http', 'socks5'):
+                if self.pools[name]:
+                    return name
+        else:
+            # HTTPS: socks5 أو http فقط (لا socks4!)
+            for name in ('socks5', 'http'):
+                if self.pools[name]:
+                    return name
+
         return None
 
-    # ============================================================
-    # REQUEST
-    # ============================================================
     def process_request(self, request, spider):
         if request.meta.get('proxy'):
             return None
@@ -258,18 +190,16 @@ class FreeProxyRotatorMiddleware:
         self.used_by_pool[pool_name] += 1
         return None
 
-    # ============================================================
-    # RESPONSE
-    # ============================================================
     def process_response(self, request, response, spider):
         raw = request.meta.get('_raw_proxy')
         if not raw:
             return response
 
-        # كشف Google CAPTCHA فورًا
+        # Google CAPTCHA
         if self._is_google_captcha(response):
-            logger.warning(f"🚫 Google CAPTCHA detected via {raw} → rotating")
+            self.captcha_hits += 1
             self._mark_failure(raw, request.meta.get('_proxy_pool'))
+            logger.warning(f"🚫 Google CAPTCHA via {raw} → rotating")
             retry = request.copy()
             retry.meta['proxy'] = None
             retry.meta.pop('_raw_proxy', None)
@@ -290,17 +220,12 @@ class FreeProxyRotatorMiddleware:
 
         return response
 
-    # ============================================================
-    # EXCEPTION
-    # ============================================================
     def process_exception(self, request, exception, spider):
         raw = request.meta.get('_raw_proxy')
         if not raw:
             return None
 
         self._mark_failure(raw, request.meta.get('_proxy_pool'))
-        logger.debug(f"💀 [{request.meta.get('_proxy_pool')}] {raw} ({exception.__class__.__name__})")
-
         retry = request.copy()
         retry.meta['proxy'] = None
         retry.meta.pop('_raw_proxy', None)
@@ -322,5 +247,6 @@ class FreeProxyRotatorMiddleware:
             f"   SOCKS5: used={self.used_by_pool['socks5']} | "
             f"removed={self.dead_removed['socks5']} | alive={len(self.pools['socks5'])}\n"
             f"   HTTP:   used={self.used_by_pool['http']} | "
-            f"removed={self.dead_removed['http']} | alive={len(self.pools['http'])}"
+            f"removed={self.dead_removed['http']} | alive={len(self.pools['http'])}\n"
+            f"   Captcha hits: {self.captcha_hits}"
         )
