@@ -2,7 +2,7 @@ name: Traffic Bot Runner
 
 on:
   schedule:
-    - cron: '0 */4 * * *'
+    - cron: '0 */2 * * *'          # ← كل ساعتين (12 مرة/يوم)
   workflow_dispatch:
     inputs:
       target_url:
@@ -15,10 +15,6 @@ on:
         default: 'both'
         type: choice
         options: [both, scrapy, browserstack, local]
-      use_browserstack:
-        description: 'Use BrowserStack'
-        required: false
-        default: 'true'
 
 permissions:
   actions: write
@@ -26,135 +22,21 @@ permissions:
 
 jobs:
   # ============================================================
-  # 1) SCRAPY SPIDER — Manual only
-  # ============================================================
-  run-scrapy-spider:
-    name: Run Scrapy Spider (Manual)
-    if: |
-      github.event.inputs.run_mode == 'both' ||
-      github.event.inputs.run_mode == 'scrapy'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install Python deps
-        run: |
-          pip install --upgrade pip
-          pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1' 'PySocks>=1.7.1'
-          pip install --no-cache-dir -r requirements.txt
-          echo "=== Installed versions ==="
-          pip show Twisted w3lib scrapy PySocks | grep -E "Name|Version"
-
-      - name: Verify dependencies
-        run: |
-          python -c "import twisted; print('Twisted:', twisted.__version__)"
-          python -c "from twisted.internet._sslverify import _setAcceptableProtocols; print('✅ SSL protocols OK')"
-          python -c "from w3lib.url import _safe_chars; print('✅ w3lib OK')"
-          python -c "import socks; print('✅ PySocks:', socks.__version__)"
-          python -c "import scrapy; print('✅ Scrapy:', scrapy.__version__)"
-
-      - name: Debug env
-        env:
-          TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
-        run: |
-          echo "TARGET_URL: $TARGET_URL"
-          echo "MONGODB set: ${{ secrets.MONGODB_URI != '' }}"
-          echo "Manual proxies:"
-          wc -l manual_proxies.txt 2>/dev/null || echo "not found"
-
-      - name: Run Scrapy spider
-        env:
-          MONGODB_URI: ${{ secrets.MONGODB_URI }}
-          TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
-          MANUAL_PROXY_FILE: 'manual_proxies.txt'
-          PROXY_HEALTHCHECK: 'false'
-          DISABLE_PROXIES: 'false'
-          FETCH_REMOTE_PROXIES: 'true'
-        run: |
-          scrapy crawl traffic_bot \
-            -a target_url="${TARGET_URL}" \
-            -O scrapy_results.json \
-            -L INFO
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: scrapy-results
-          path: scrapy_results.json
-          if-no-files-found: ignore
-          retention-days: 7
-
-  # ============================================================
-  # 2) BROWSERSTACK SPIDER — Auto + Manual
-  # ============================================================
-  run-browserstack-spider:
-    name: Run BrowserStack Spider
-    if: |
-      github.event_name == 'schedule' ||
-      github.event.inputs.run_mode == 'both' ||
-      github.event.inputs.run_mode == 'browserstack'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install Python deps
-        run: |
-          pip install --upgrade pip
-          pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1' 'PySocks>=1.7.1'
-          pip install --no-cache-dir -r requirements.txt
-
-      - name: Verify dependencies
-        run: |
-          python -c "from twisted.internet._sslverify import _setAcceptableProtocols; print('✅ SSL OK')"
-          python -c "import socks; print('✅ PySocks OK')"
-
-      - name: Run BrowserStack spider
-        env:
-          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
-          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
-          MONGODB_URI: ${{ secrets.MONGODB_URI }}
-          TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
-          USE_BROWSERSTACK: ${{ github.event.inputs.use_browserstack || 'true' }}
-        run: |
-          scrapy crawl browserstack_bot \
-            -a target_url="${TARGET_URL}" \
-            -a use_browserstack="${USE_BROWSERSTACK}" \
-            -O browserstack_results.json \
-            -L INFO
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: browserstack-results
-          path: browserstack_results.json
-          if-no-files-found: ignore
-          retention-days: 7
-
-  # ============================================================
-  # 3) LOCAL BROWSER SPIDER — Auto + Manual
+  # 1) LOCAL CHROME — 20 جلسة متوازية (المحرك الأساسي)
   # ============================================================
   run-local-browser-spider:
-    name: Run Local Browser Spider
+    name: Local Chrome #${{ matrix.attempt }}
     if: |
       github.event_name == 'schedule' ||
       github.event.inputs.run_mode == 'both' ||
       github.event.inputs.run_mode == 'local'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+      fail-fast: false
+      max-parallel: 5              # ← 5 متوازية لتجنب الحظر
     steps:
       - uses: actions/checkout@v4
 
@@ -163,7 +45,7 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install Chrome + ChromeDriver (matched versions)
+      - name: Install Chrome + ChromeDriver
         run: |
           sudo apt-get update
           sudo apt-get install -y wget unzip xvfb
@@ -176,8 +58,6 @@ jobs:
           sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
           sudo chmod +x /usr/local/bin/chromedriver
           sudo ln -sf /opt/chrome/chrome /usr/local/bin/google-chrome
-          /usr/local/bin/google-chrome --version
-          /usr/local/bin/chromedriver --version
 
       - name: Install Python deps
         run: |
@@ -185,7 +65,7 @@ jobs:
           pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1' 'PySocks>=1.7.1'
           pip install --no-cache-dir -r requirements.txt
 
-      - name: Run Local Browser spider
+      - name: Run Local Browser
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
@@ -195,24 +75,134 @@ jobs:
           xvfb-run -a scrapy crawl browserstack_bot \
             -a target_url="${TARGET_URL}" \
             -a use_browserstack="false" \
-            -O local_results.json \
+            -O local_results_${{ matrix.attempt }}.json \
             -L INFO
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: local-results
-          path: local_results.json
+          name: local-results-${{ matrix.attempt }}
+          path: local_results_${{ matrix.attempt }}.json
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 3
 
   # ============================================================
-  # 4) AGGREGATE RESULTS
+  # 2) SCRAPY — 10 جلسات متوازية (مع VPS proxy)
+  # ============================================================
+  run-scrapy-spider:
+    name: Scrapy #${{ matrix.attempt }}
+    if: |
+      github.event_name == 'schedule' ||
+      github.event.inputs.run_mode == 'both' ||
+      github.event.inputs.run_mode == 'scrapy'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+      fail-fast: false
+      max-parallel: 3
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python deps
+        run: |
+          pip install --upgrade pip
+          pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1' 'PySocks>=1.7.1'
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: Add VPS Proxy
+        env:
+          VPS_PROXY: ${{ secrets.VPS_PROXY }}
+        run: |
+          if [ -n "$VPS_PROXY" ]; then
+            echo "$VPS_PROXY" >> manual_proxies.txt
+            echo "✅ VPS proxy added"
+          else
+            echo "⚠️ No VPS proxy — using free proxies only"
+          fi
+
+      - name: Run Scrapy
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
+          MANUAL_PROXY_FILE: 'manual_proxies.txt'
+          PROXY_HEALTHCHECK: 'false'
+          DISABLE_PROXIES: 'false'
+          FETCH_REMOTE_PROXIES: 'true'
+        run: |
+          scrapy crawl traffic_bot \
+            -a target_url="${TARGET_URL}" \
+            -O scrapy_results_${{ matrix.attempt }}.json \
+            -L INFO
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrapy-results-${{ matrix.attempt }}
+          path: scrapy_results_${{ matrix.attempt }}.json
+          if-no-files-found: ignore
+          retention-days: 3
+
+  # ============================================================
+  # 3) BROWSERSTACK — جلسة واحدة فقط (محدود)
+  # ============================================================
+  run-browserstack-spider:
+    name: BrowserStack (limited)
+    if: |
+      github.event.inputs.run_mode == 'both' ||
+      github.event.inputs.run_mode == 'browserstack'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python deps
+        run: |
+          pip install --upgrade pip
+          pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1' 'PySocks>=1.7.1'
+          pip install --no-cache-dir -r requirements.txt
+
+      - name: Run BrowserStack
+        env:
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
+        run: |
+          scrapy crawl browserstack_bot \
+            -a target_url="${TARGET_URL}" \
+            -a use_browserstack="true" \
+            -O browserstack_results.json \
+            -L INFO
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browserstack-results
+          path: browserstack_results.json
+          if-no-files-found: ignore
+          retention-days: 3
+
+  # ============================================================
+  # 4) AGGREGATE
   # ============================================================
   aggregate-results:
     name: Aggregate Results
-    needs: [run-scrapy-spider, run-browserstack-spider, run-local-browser-spider]
+    needs: [run-local-browser-spider, run-scrapy-spider, run-browserstack-spider]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -228,51 +218,16 @@ jobs:
       - name: Install pymongo
         run: pip install pymongo
 
-      - name: Aggregate and summarize
+      - name: Aggregate
         run: |
           echo "=== TRAFFIC BOT RUN SUMMARY ==="
-          echo "Run ID: ${{ github.run_id }}"
-          echo "Run Number: ${{ github.run_number }}"
-          echo "Trigger: ${{ github.event_name }}"
+          echo "Run: ${{ github.run_number }} | Trigger: ${{ github.event_name }}"
           echo ""
 
-          cat << 'PYEOF' > aggregate.py
-          import sys, json
-          try:
-              content = sys.stdin.read().strip()
-              if not content:
-                  data = []
-              elif content.startswith('['):
-                  data = json.loads(content)
-              else:
-                  data = [json.loads(line) for line in content.split('\n') if line.strip()]
-              visits = [d for d in data if d.get('type') in ['visit', 'browserstack_visit']]
-              ad_clicks = [d for d in data if d.get('type') == 'ad_click']
-              form_submits = [d for d in data if d.get('type') == 'form_submit']
-              total_visits = len(visits)
-              total_ads = sum(v.get('ads_clicked', 0) for v in visits) + len(ad_clicks)
-              total_forms = sum(v.get('forms_filled', 0) for v in visits) + len(form_submits)
-              print(f'Visits: {total_visits}')
-              print(f'Ads Clicked: {total_ads}')
-              print(f'Forms Filled: {total_forms}')
-              print(f'Status: {visits[0].get("status", "N/A") if visits else "N/A"}')
-          except Exception as e:
-              print(f"Notice: {e}")
-          PYEOF
-
-          for file in artifacts/*/*.json; do
-            if [ -f "$file" ]; then
-              echo "--- $(basename $file) ---"
-              cat "$file" | python3 aggregate.py
-            fi
-          done
-
-      - name: Fail if all results empty
-        run: |
           total=$(python3 - <<'PYEOF'
           import json, glob
           total = 0
-          for f in glob.glob('artifacts/*/*.json'):
+          for f in glob.glob('artifacts/**/*.json', recursive=True):
               try:
                   with open(f) as fh:
                       c = fh.read().strip()
@@ -285,29 +240,58 @@ jobs:
           PYEOF
           )
           echo "TOTAL ITEMS: $total"
+
+          echo "--- Local Chrome ---"
+          local_total=$(python3 -c "
+          import json, glob
+          t = 0
+          for f in glob.glob('artifacts/local-results-*/*.json'):
+              try:
+                  with open(f) as fh:
+                      d = json.load(fh)
+                      t += len(d)
+              except: pass
+          print(t)
+          ")
+          echo "Visits: $local_total"
+
+          echo "--- Scrapy ---"
+          scrapy_total=$(python3 -c "
+          import json, glob
+          t = 0
+          for f in glob.glob('artifacts/scrapy-results-*/*.json'):
+              try:
+                  with open(f) as fh:
+                      d = json.load(fh)
+                      t += len(d)
+              except: pass
+          print(t)
+          ")
+          echo "Visits: $scrapy_total"
+
           if [ "$total" -eq 0 ]; then
-            echo "::error::No items produced in this run"
+            echo "::error::No items produced"
             exit 1
           fi
 
-      - name: Send summary to MongoDB
+      - name: Send to MongoDB
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
         run: |
-          cat << 'PYEOF' > mongo_log.py
+          python3 - <<'PYEOF'
           import os, json, glob
           from pymongo import MongoClient
           from datetime import datetime, timezone
           uri = os.getenv('MONGODB_URI', '').strip()
           if not uri:
-              print("MongoDB: empty URI, skipping")
+              print("MongoDB: skipping")
               raise SystemExit(0)
           try:
               client = MongoClient(uri, serverSelectionTimeoutMS=5000)
               db = client['traffic_bot']
               sessions = db['sessions']
               total_visits = total_ads = total_forms = 0
-              for f in glob.glob('artifacts/*/*.json'):
+              for f in glob.glob('artifacts/**/*.json', recursive=True):
                   try:
                       with open(f) as fh:
                           c = fh.read().strip()
@@ -330,11 +314,10 @@ jobs:
                   'total_forms_filled': total_forms,
                   'status': 'completed' if total_visits else 'empty',
               })
-              print(f"Logged: {total_visits} visits, {total_ads} ads, {total_forms} forms")
+              print(f"Logged: {total_visits} visits")
           except Exception as e:
               print(f"MongoDB Notice: {e}")
           PYEOF
-          python3 mongo_log.py
 
   # ============================================================
   # 5) CLEANUP
@@ -348,5 +331,5 @@ jobs:
         with:
           token: ${{ github.token }}
           repository: ${{ github.repository }}
-          retain_days: 7
-          keep_minimum_runs: 10
+          retain_days: 3
+          keep_minimum_runs: 20
