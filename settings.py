@@ -49,13 +49,13 @@ REDIRECT_ENABLED = True
 REDIRECT_MAX_TIMES = 3
 HTTPERROR_ALLOWED_CODES = [302, 403, 429]
 
-# ---------------- Proxies ----------------
-FREE_PROXY_LIST_URL = []
-ROTATING_PROXY_PAGE_RETRY_TIMES = 3
+# ---------------- Fingerprint ----------------
+FINGERPRINT_STICKY = True
 
 # ---------------- Pipelines ----------------
 ITEM_PIPELINES = {
     'pipelines.MongoPipeline': 300,
+    'pipelines.StatsAggregationPipeline': 400,
 }
 
 MONGODB_URI = os.environ.get('MONGODB_URI', '')
