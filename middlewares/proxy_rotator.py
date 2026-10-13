@@ -1,16 +1,13 @@
 # middlewares/proxy_rotator.py
-"""
-# middlewares/proxy_rotator.py
-"""
-Proxy Rotator — Ultimate Production Version
-============================================
-- يدعم كل الصيغ: ip:port, ip:port:user:pass, user:pass@ip:port, socks4/5/h
-- 3 pools (socks4, socks5, http) مع اختيار ذكي حسب scheme.
-- Healthcheck موازي.
-- حذف فوري للميت.
-- Google CAPTCHA detection.
-- HTTP fallback بعد فشل SOCKS.
-"""
+# Proxy Rotator - Ultimate Production Version
+# ============================================
+# - 3 pools: socks4, socks5, http
+# - Format support: ip:port, ip:port:user:pass, user:pass@ip:port, schemes
+# - Healthcheck parallel
+# - Google CAPTCHA detection
+# - Instant dead proxy removal
+# - HTTP fallback after SOCKS failures
+
 import os
 import re
 import random
@@ -66,7 +63,7 @@ class FreeProxyRotatorMiddleware:
         self.socks_fail_count = 0
 
         logger.info(
-            f"📊 Pools → SOCKS4: {len(self.pools['socks4'])} | "
+            f"Pools -> SOCKS4: {len(self.pools['socks4'])} | "
             f"SOCKS5: {len(self.pools['socks5'])} | HTTP: {len(self.pools['http'])}"
         )
 
@@ -77,7 +74,6 @@ class FreeProxyRotatorMiddleware:
 
         proxies = set()
 
-        # ملف يدوي
         manual_file = os.environ.get('MANUAL_PROXY_FILE', 'manual_proxies.txt')
         if os.path.isfile(manual_file):
             count_before = len(proxies)
@@ -86,9 +82,8 @@ class FreeProxyRotatorMiddleware:
                     line = line.strip()
                     if line and not line.startswith('#'):
                         proxies.add(line)
-            logger.info(f"📁 Manual proxies: {len(proxies) - count_before}")
+            logger.info(f"Manual proxies: {len(proxies) - count_before}")
 
-        # env
         manual_env = os.environ.get('MANUAL_PROXIES', '').strip()
         if manual_env:
             for p in re.split(r'[,\n]', manual_env):
@@ -96,7 +91,6 @@ class FreeProxyRotatorMiddleware:
                 if p:
                     proxies.add(p)
 
-        # مصادر بعيدة
         if os.environ.get('FETCH_REMOTE_PROXIES', 'true').lower() == 'true':
             for url in cls.HTTP_SOURCES:
                 try:
@@ -108,9 +102,9 @@ class FreeProxyRotatorMiddleware:
                         if line and not line.startswith('#') and ':' in line:
                             proxies.add(line)
                             count += 1
-                    logger.info(f"🌐 {url.split('/')[4]}: {count} HTTP")
+                    logger.info(f"Remote {url.split('/')[4]}: {count} HTTP")
                 except Exception as e:
-                    logger.warning(f"⚠️ {url}: {e}")
+                    logger.warning(f"Failed {url}: {e}")
 
         if not proxies:
             raise NotConfigured("No proxies available")
@@ -118,7 +112,6 @@ class FreeProxyRotatorMiddleware:
         proxies = list(proxies)
         random.shuffle(proxies)
 
-        # Healthcheck
         healthcheck = os.environ.get('PROXY_HEALTHCHECK', 'false').lower() == 'true'
         if healthcheck:
             proxies = cls._filter_alive(proxies)
@@ -149,7 +142,7 @@ class FreeProxyRotatorMiddleware:
                 pass
             return None
 
-        logger.info(f"🔍 Health-checking {sample_size} proxies...")
+        logger.info(f"Health-checking {sample_size} proxies...")
         with ThreadPoolExecutor(max_workers=cls.HEALTHCHECK_WORKERS) as ex:
             futures = {ex.submit(check, p): p for p in sample_list}
             for fut in as_completed(futures):
@@ -157,7 +150,7 @@ class FreeProxyRotatorMiddleware:
                 if res:
                     alive.append(res)
 
-        logger.info(f"✅ Alive: {len(alive)}/{sample_size}")
+        logger.info(f"Alive: {len(alive)}/{sample_size}")
         return alive or sample_list
 
     @staticmethod
@@ -243,7 +236,7 @@ class FreeProxyRotatorMiddleware:
         if self._is_google_captcha(response):
             self.captcha_hits += 1
             self._mark_failure(raw, pool)
-            logger.warning(f"🚫 Google CAPTCHA via {raw}")
+            logger.warning(f"Google CAPTCHA via {raw}")
             return self._retry(request)
 
         if response.status < 400:
@@ -283,15 +276,16 @@ class FreeProxyRotatorMiddleware:
 
     def spider_closed(self, spider):
         logger.info(
-            "\n════════════════════════════════════════════════════════\n"
-            "📊 PROXY ROTATOR REPORT\n"
-            "════════════════════════════════════════════════════════\n"
+            "\n"
+            "============================================================\n"
+            "PROXY ROTATOR REPORT\n"
+            "============================================================\n"
             f"   Total used:     {sum(self.used_by_pool.values())}\n"
             f"   Total removed:  {sum(self.dead_removed.values())}\n"
             f"   Captcha hits:   {self.captcha_hits}\n"
             f"   SOCKS failures: {self.socks_fail_count}\n"
-            f"   ▸ SOCKS4: used={self.used_by_pool['socks4']} | alive={len(self.pools['socks4'])}\n"
-            f"   ▸ SOCKS5: used={self.used_by_pool['socks5']} | alive={len(self.pools['socks5'])}\n"
-            f"   ▸ HTTP:   used={self.used_by_pool['http']} | alive={len(self.pools['http'])}\n"
-            "════════════════════════════════════════════════════════"
+            f"   SOCKS4: used={self.used_by_pool['socks4']} | alive={len(self.pools['socks4'])}\n"
+            f"   SOCKS5: used={self.used_by_pool['socks5']} | alive={len(self.pools['socks5'])}\n"
+            f"   HTTP:   used={self.used_by_pool['http']} | alive={len(self.pools['http'])}\n"
+            "============================================================"
         )
