@@ -1,4 +1,5 @@
 # spiders/browserstack_spider.py
+# Adsterra + Monetag optimized
 import os
 import random
 import time
@@ -24,16 +25,14 @@ class BrowserStackSpider(scrapy.Spider):
         ('chrome', 'Windows', '11'),
         ('chrome', 'Windows', '10'),
         ('chrome', 'OS X', 'Ventura'),
-        ('chrome', 'OS X', 'Monterey'),
         ('firefox', 'Windows', '11'),
         ('edge', 'Windows', '11'),
-        ('safari', 'OS X', 'Ventura'),
     ]
 
     # ============================================================
     # إعدادات مُحسَّنة للمردودية
     # ============================================================
-    AD_CLICK_PROBABILITY = 0.80
+    AD_CLICK_PROBABILITY = 0.90
     MAX_AD_CLICKS_PER_SESSION = 3
     DWELL_TIME_MIN = 60
     DWELL_TIME_MAX = 120
@@ -41,9 +40,7 @@ class BrowserStackSpider(scrapy.Spider):
     INTERNAL_LINKS_MAX = 3
     SCROLL_MIN = 5
     SCROLL_MAX = 10
-
-    # انتظار AdSense للتحميل
-    ADSENSE_WAIT = 5
+    ADS_WAIT = 6  # انتظار تحميل Adsterra/Monetag
 
     def __init__(self, target_url=None, use_browserstack='true', *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -103,25 +100,25 @@ class BrowserStackSpider(scrapy.Spider):
                 self.captcha_detected = True
                 raise RuntimeError("Google CAPTCHA detected")
 
-            # 1) تمرير أولي
+            # 1) تمرير أولي لتحميل الإعلانات
             self._random_scroll()
 
-            # 2) انتظار AdSense للتحميل
-            time.sleep(self.ADSENSE_WAIT)
+            # 2) انتظار Adsterra/Monetag
+            time.sleep(self.ADS_WAIT)
 
-            # 3) نقرات الإعلانات (احتمال 80%)
+            # 3) نقرات الإعلانات (احتمال 90%)
             if random.random() < self.AD_CLICK_PROBABILITY:
-                self._safe_click_ads_js()
+                self._click_adsterra_monetag()
             else:
                 self.logger.info("Ad click skipped (probability)")
 
             # 4) ملء النماذج
             self.forms_filled = self.client.fill_form()
 
-            # 5) نقرات روابط داخلية
+            # 5) روابط داخلية
             self._click_internal_links()
 
-            # 6) Dwell time
+            # 6) Dwell
             self._dwell()
 
             try:
@@ -166,49 +163,52 @@ class BrowserStackSpider(scrapy.Spider):
         }
 
     # ============================================================
-    # JS-BASED AD CLICKING (القلب الجديد)
+    # ADSTERRA + MONETAG CLICKING (القلب الجديد)
     # ============================================================
-    def _safe_click_ads_js(self):
+    def _click_adsterra_monetag(self):
         """
-        ينقر على الإعلانات عبر JavaScript (يتجاوز iframes).
-        يعمل مع AdSense, Adsterra, Monetag, PropellerAds, MGID.
+        ينقر على إعلانات Adsterra و Monetag.
+        
+        أنواع الإعلانات:
+        - Adsterra Popunder: opens new tab on click
+        - Adsterra Social Bar: iframe قابل للنقر
+        - Adsterra Native Bar: container div
+        - Adsterra Banners: iframes بأحجام ثابتة
+        - Monetag: script tags + containers
         """
         max_clicks = random.randint(1, self.MAX_AD_CLICKS_PER_SESSION)
-        self.logger.info(f"JS Ad clicking: up to {max_clicks} ads")
+        self.logger.info(f"Adsterra/Monetag clicking: up to {max_clicks} ads")
 
         clicked = 0
 
         # ============================================================
-        # JS Script 1: النقر على إعلانات AdSense (ins.adsbygoogle)
+        # Script 1: Adsterra Native Bar
         # ============================================================
-        js_adsense = """
+        js_native = """
         (() => {
-            const ads = document.querySelectorAll('ins.adsbygoogle');
-            if (ads.length === 0) return null;
-            
-            const ad = ads[Math.floor(Math.random() * ads.length)];
-            ad.scrollIntoView({block: 'center', behavior: 'smooth'});
-            
-            const rect = ad.getBoundingClientRect();
+            const containers = document.querySelectorAll('[id^="container-"]');
+            if (containers.length === 0) return null;
+            const c = containers[Math.floor(Math.random() * containers.length)];
+            if (c.offsetWidth < 100 || c.offsetHeight < 50) return null;
+            c.scrollIntoView({block: 'center', behavior: 'smooth'});
+            const rect = c.getBoundingClientRect();
             const x = rect.left + rect.width / 2;
             const y = rect.top + rect.height / 2;
-            
             const targets = [
                 document.elementFromPoint(x, y),
-                ad.querySelector('iframe'),
-                ad.firstElementChild,
-                ad,
+                c.querySelector('iframe'),
+                c.querySelector('a'),
+                c.firstElementChild,
+                c,
             ].filter(t => t);
-            
             for (const t of targets) {
                 try {
                     t.click();
-                    const evt = new MouseEvent('click', {
+                    t.dispatchEvent(new MouseEvent('click', {
                         bubbles: true, cancelable: true, view: window,
-                        clientX: x, clientY: y
-                    });
-                    t.dispatchEvent(evt);
-                    return 'adsbygoogle';
+                        clientX: x, clientY: y, button: 0
+                    }));
+                    return 'native-' + c.id;
                 } catch(e) {}
             }
             return null;
@@ -216,135 +216,148 @@ class BrowserStackSpider(scrapy.Spider):
         """
 
         # ============================================================
-        # JS Script 2: النقر على iframes الإعلانية
+        # Script 2: Adsterra Banners (highrevenueformat.com)
         # ============================================================
-        js_iframes = """
+        js_banners = """
         (() => {
-            const selectors = [
-                'iframe[src*="doubleclick"]',
-                'iframe[src*="googlesyndication"]',
-                'iframe[id*="google_ads"]',
-                'iframe[src*="effectivecpmnetwork"]',
-                'iframe[src*="highperformanceformat"]',
-                'iframe[src*="adsterra"]',
-                'iframe[src*="propellerads"]',
-                'iframe[src*="mgid"]',
-                'iframe[src*="monetag"]',
-            ];
-            const allIframes = [];
-            for (const sel of selectors) {
-                document.querySelectorAll(sel).forEach(f => allIframes.push([sel, f]));
+            const iframes = document.querySelectorAll('iframe');
+            const banners = [];
+            for (const f of iframes) {
+                const src = (f.src || '').toLowerCase();
+                if (src.includes('highrevenueformat') ||
+                    src.includes('profitableratecpmnetwork') ||
+                    src.includes('effectivecpmnetwork') ||
+                    src.includes('highperformanceformat')) {
+                    banners.push(f);
+                }
             }
-            if (allIframes.length === 0) return null;
-            
-            const [sel, iframe] = allIframes[Math.floor(Math.random() * allIframes.length)];
-            iframe.scrollIntoView({block: 'center', behavior: 'smooth'});
-            
-            const rect = iframe.getBoundingClientRect();
+            if (banners.length === 0) return null;
+            const b = banners[Math.floor(Math.random() * banners.length)];
+            b.scrollIntoView({block: 'center', behavior: 'smooth'});
+            const rect = b.getBoundingClientRect();
             const x = rect.left + rect.width / 2;
             const y = rect.top + rect.height / 2;
-            
             const evt = new MouseEvent('click', {
                 bubbles: true, cancelable: true, view: window,
                 clientX: x, clientY: y, button: 0
             });
-            iframe.dispatchEvent(evt);
-            
+            try {
+                b.click();
+                b.dispatchEvent(evt);
+            } catch(e) {}
             const el = document.elementFromPoint(x, y);
-            if (el && el !== iframe) {
+            if (el && el !== b) {
                 try { el.click(); el.dispatchEvent(evt); } catch(e) {}
             }
-            try { iframe.click(); } catch(e) {}
-            
-            return sel;
+            return 'banner-' + (b.src || '').slice(0, 50);
         })();
         """
 
         # ============================================================
-        # JS Script 3: النقر على روابط إعلانية مباشرة
+        # Script 3: Monetag (quge5.com)
         # ============================================================
-        js_links = """
+        js_monetag = """
         (() => {
-            const selectors = [
-                'a[href*="adsterra"]',
-                'a[href*="monetag"]',
-                'a[href*="propellerads"]',
-                'a[href*="effectivecpmnetwork"]',
-                'a[href*="highperformanceformat"]',
-                'a[href*="mgid"]',
-                'a[href*="taboola"]',
-                'a[href*="outbrain"]',
-                'div[id^="ad-"]',
-                'div[class*="advertisement"]',
-                'div[class*="ad-banner"]',
-                '[class*="banner-ad"]',
-                '.adsense',
-            ];
-            for (const sel of selectors) {
-                const els = document.querySelectorAll(sel);
-                if (els.length > 0) {
-                    const el = els[Math.floor(Math.random() * els.length)];
-                    el.scrollIntoView({block: 'center', behavior: 'smooth'});
-                    
-                    const rect = el.getBoundingClientRect();
-                    const x = rect.left + rect.width / 2;
-                    const y = rect.top + rect.height / 2;
-                    
-                    const evt = new MouseEvent('click', {
-                        bubbles: true, cancelable: true, view: window,
-                        clientX: x, clientY: y, button: 0
-                    });
-                    try {
-                        el.click();
-                        el.dispatchEvent(evt);
-                        return sel;
-                    } catch(e) {}
-                }
-            }
+            const meta = document.querySelector('meta[name="monetag"]');
+            const hasMonetag = meta || (window.location.href.includes('quge5') ||
+                                document.documentElement.innerHTML.includes('quge5.com'));
+            if (!hasMonetag) return null;
+            
+            const clickable = document.querySelectorAll(
+                'a[href*="quge5"], a[href*="monetag"], '
+                + '[class*="monetag"], [id*="monetag"], '
+                + '[data-zone="260812"], [data-zone="260829"]'
+            );
+            if (clickable.length === 0) return null;
+            const el = clickable[Math.floor(Math.random() * clickable.length)];
+            el.scrollIntoView({block: 'center'});
+            const rect = el.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            const evt = new MouseEvent('click', {
+                bubbles: true, cancelable: true, view: window,
+                clientX: x, clientY: y, button: 0
+            });
+            try { el.click(); el.dispatchEvent(evt); return 'monetag'; } catch(e) {}
             return null;
         })();
         """
 
         # ============================================================
-        # JS Script 4: النقر على iframe عبر Offsets (احتياطي)
+        # Script 4: عام - أي iframe إعلاني
         # ============================================================
-        js_offset = """
+        js_any_iframe = """
         (() => {
-            const allEls = document.querySelectorAll('*');
+            const iframes = Array.from(document.querySelectorAll('iframe')).filter(f => {
+                const rect = f.getBoundingClientRect();
+                return rect.width >= 100 && rect.height >= 40 &&
+                       rect.width <= 800 && rect.height <= 700;
+            });
+            if (iframes.length === 0) return null;
+            const b = iframes[Math.floor(Math.random() * iframes.length)];
+            b.scrollIntoView({block: 'center', behavior: 'smooth'});
+            const rect = b.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            try {
+                b.click();
+                b.dispatchEvent(new MouseEvent('click', {
+                    bubbles: true, cancelable: true, view: window,
+                    clientX: x, clientY: y, button: 0
+                }));
+                return 'iframe';
+            } catch(e) {}
+            return null;
+        })();
+        """
+
+        # ============================================================
+        # Script 5: عام - أي عنصر بحجم إعلان
+        # ============================================================
+        js_any_ad = """
+        (() => {
+            const all = document.querySelectorAll('*');
             const candidates = [];
-            for (const el of allEls) {
+            for (const el of all) {
                 const rect = el.getBoundingClientRect();
-                if (rect.width >= 200 && rect.height >= 50 && rect.width <= 800 && rect.height <= 400) {
-                    const cls = (el.className || '').toString().toLowerCase();
-                    const id = (el.id || '').toString().toLowerCase();
-                    if (cls.includes('ad') || id.includes('ad') ||
-                        cls.includes('banner') || cls.includes('sponsor')) {
-                        candidates.push(el);
-                    }
+                if (rect.width < 150 || rect.height < 40) continue;
+                if (rect.width > 900 || rect.height > 700) continue;
+                const cls = (el.className || '').toString().toLowerCase();
+                const id = (el.id || '').toString().toLowerCase();
+                if (cls.includes('ad') || id.includes('ad') ||
+                    cls.includes('banner') || cls.includes('sponsor') ||
+                    cls.includes('popunder') || cls.includes('container-')) {
+                    candidates.push(el);
                 }
             }
             if (candidates.length === 0) return null;
             const el = candidates[Math.floor(Math.random() * candidates.length)];
             el.scrollIntoView({block: 'center'});
             const rect = el.getBoundingClientRect();
-            const evt = new MouseEvent('click', {
-                bubbles: true, cancelable: true, view: window,
-                clientX: rect.left + rect.width / 2,
-                clientY: rect.top + rect.height / 2,
-                button: 0
-            });
-            try { el.click(); el.dispatchEvent(evt); return 'offset'; } catch(e) {}
+            try {
+                el.click();
+                el.dispatchEvent(new MouseEvent('click', {
+                    bubbles: true, cancelable: true, view: window,
+                    clientX: rect.left + rect.width / 2,
+                    clientY: rect.top + rect.height / 2,
+                    button: 0
+                }));
+                return 'generic-ad';
+            } catch(e) {}
             return null;
         })();
         """
 
+        # ============================================================
+        # تشغيل السكريبتات بترتيب عشوائي
+        # ============================================================
         scripts = [
-            ('adsense', js_adsense),
-            ('iframes', js_iframes),
-            ('links', js_links),
-            ('offset', js_offset),
+            ('native', js_native),
+            ('banners', js_banners),
+            ('monetag', js_monetag),
+            ('any_iframe', js_any_iframe),
+            ('any_ad', js_any_ad),
         ]
-
         random.shuffle(scripts)
 
         for script_name, script_code in scripts:
@@ -361,35 +374,41 @@ class BrowserStackSpider(scrapy.Spider):
                     # انتظار بعد النقر
                     time.sleep(random.uniform(4.0, 8.0))
 
-                    # أغلق التبويبات الجديدة
+                    # أغلق التبويبات الجديدة (Adsterra Popunder)
                     self._close_extra_tabs()
 
-                    # انتظار قبل النقر التالي
                     time.sleep(random.uniform(2.0, 4.0))
 
                     # تمرير بسيط
-                    self.client.driver.execute_script(
-                        "window.scrollBy({top: 300, behavior: 'smooth'});"
-                    )
+                    try:
+                        self.client.driver.execute_script(
+                            "window.scrollBy({top: 300, behavior: 'smooth'});"
+                        )
+                    except Exception:
+                        pass
                     time.sleep(random.uniform(1.0, 2.0))
+                else:
+                    self.logger.debug(f"Script {script_name}: no ad found")
 
             except Exception as e:
                 self.logger.debug(f"Script {script_name} failed: {e}")
 
-        self.logger.info(f"Total ads clicked via JS: {clicked}")
+        self.logger.info(f"Total ads clicked: {clicked}")
 
     def _close_extra_tabs(self):
-        """يغلق التبويبات الجديدة."""
+        """يغلق تبويبات Adsterra Popunder."""
         try:
-            if len(self.client.driver.window_handles) > 1:
-                main = self.client.driver.window_handles[0]
-                for handle in self.client.driver.window_handles[1:]:
+            handles = self.client.driver.window_handles
+            if len(handles) > 1:
+                main = handles[0]
+                for handle in handles[1:]:
                     self.client.driver.switch_to.window(handle)
-                    time.sleep(random.uniform(1.5, 3.0))
+                    time.sleep(random.uniform(2.0, 4.0))
                     self.client.driver.close()
                 self.client.driver.switch_to.window(main)
-        except Exception:
-            pass
+                self.logger.info(f"Closed {len(handles) - 1} extra tabs")
+        except Exception as e:
+            self.logger.debug(f"Tab close error: {e}")
 
     # ============================================================
     # SCROLL
