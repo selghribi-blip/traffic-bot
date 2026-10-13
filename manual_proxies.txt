@@ -26,9 +26,11 @@
 
 # manual_proxies.txt
 # ============================================================
-# Webshare Datacenter (HTTP with auth)
+# Webshare Datacenter - 10 Accounts (100 unique proxy combos)
 # Format: ip:port:username:password
 # ============================================================
+
+# ---------- Account 1: uisdhfubfi1 ----------
 45.38.107.97:6014:uisdhfubfi1:kfbviudsf1
 64.137.96.74:6641:uisdhfubfi1:kfbviudsf1
 198.23.243.226:6361:uisdhfubfi1:kfbviudsf1
@@ -39,6 +41,114 @@
 64.137.10.153:5803:uisdhfubfi1:kfbviudsf1
 104.164.49.38:7693:uisdhfubfi1:kfbviudsf1
 23.26.71.145:5628:uisdhfubfi1:kfbviudsf1
+
+# ---------- Account 2: vorkmjus ----------
+45.38.107.97:6014:vorkmjus:s4teh5urbicc
+64.137.96.74:6641:vorkmjus:s4teh5urbicc
+198.23.243.226:6361:vorkmjus:s4teh5urbicc
+38.154.185.97:6370:vorkmjus:s4teh5urbicc
+84.247.60.125:6095:vorkmjus:s4teh5urbicc
+191.96.254.138:6185:vorkmjus:s4teh5urbicc
+198.46.161.42:5092:vorkmjus:s4teh5urbicc
+64.137.10.153:5803:vorkmjus:s4teh5urbicc
+104.164.49.38:7693:vorkmjus:s4teh5urbicc
+23.26.71.145:5628:vorkmjus:s4teh5urbicc
+
+# ---------- Account 3: bqsmskmg ----------
+45.38.107.97:6014:bqsmskmg:6vbv8oh72xva
+64.137.96.74:6641:bqsmskmg:6vbv8oh72xva
+198.23.243.226:6361:bqsmskmg:6vbv8oh72xva
+38.154.185.97:6370:bqsmskmg:6vbv8oh72xva
+84.247.60.125:6095:bqsmskmg:6vbv8oh72xva
+191.96.254.138:6185:bqsmskmg:6vbv8oh72xva
+198.46.161.42:5092:bqsmskmg:6vbv8oh72xva
+64.137.10.153:5803:bqsmskmg:6vbv8oh72xva
+104.164.49.38:7693:bqsmskmg:6vbv8oh72xva
+23.26.71.145:5628:bqsmskmg:6vbv8oh72xva
+
+# ---------- Account 4: cnpykfrm ----------
+45.38.107.97:6014:cnpykfrm:7q4eolqcmjcr
+64.137.96.74:6641:cnpykfrm:7q4eolqcmjcr
+198.23.243.226:6361:cnpykfrm:7q4eolqcmjcr
+38.154.185.97:6370:cnpykfrm:7q4eolqcmjcr
+84.247.60.125:6095:cnpykfrm:7q4eolqcmjcr
+191.96.254.138:6185:cnpykfrm:7q4eolqcmjcr
+198.46.161.42:5092:cnpykfrm:7q4eolqcmjcr
+64.137.10.153:5803:cnpykfrm:7q4eolqcmjcr
+104.164.49.38:7693:cnpykfrm:7q4eolqcmjcr
+23.26.71.145:5628:cnpykfrm:7q4eolqcmjcr
+
+# ---------- Account 5: lmtnlhlf ----------
+45.38.107.97:6014:lmtnlhlf:wtcvpwv7anbw
+64.137.96.74:6641:lmtnlhlf:wtcvpwv7anbw
+198.23.243.226:6361:lmtnlhlf:wtcvpwv7anbw
+38.154.185.97:6370:lmtnlhlf:wtcvpwv7anbw
+84.247.60.125:6095:lmtnlhlf:wtcvpwv7anbw
+191.96.254.138:6185:lmtnlhlf:wtcvpwv7anbw
+198.46.161.42:5092:lmtnlhlf:wtcvpwv7anbw
+64.137.10.153:5803:lmtnlhlf:wtcvpwv7anbw
+104.164.49.38:7693:lmtnlhlf:wtcvpwv7anbw
+23.26.71.145:5628:lmtnlhlf:wtcvpwv7anbw
+
+# ---------- Account 6: uworlpex ----------
+45.38.107.97:6014:uworlpex:r7m6742z1t6q
+64.137.96.74:6641:uworlpex:r7m6742z1t6q
+198.23.243.226:6361:uworlpex:r7m6742z1t6q
+38.154.185.97:6370:uworlpex:r7m6742z1t6q
+84.247.60.125:6095:uworlpex:r7m6742z1t6q
+191.96.254.138:6185:uworlpex:r7m6742z1t6q
+198.46.161.42:5092:uworlpex:r7m6742z1t6q
+64.137.10.153:5803:uworlpex:r7m6742z1t6q
+104.164.49.38:7693:uworlpex:r7m6742z1t6q
+23.26.71.145:5628:uworlpex:r7m6742z1t6q
+
+# ---------- Account 7: pklujdep ----------
+45.38.107.97:6014:pklujdep:850ykjxpy8bf
+64.137.96.74:6641:pklujdep:850ykjxpy8bf
+198.23.243.226:6361:pklujdep:850ykjxpy8bf
+38.154.185.97:6370:pklujdep:850ykjxpy8bf
+84.247.60.125:6095:pklujdep:850ykjxpy8bf
+191.96.254.138:6185:pklujdep:850ykjxpy8bf
+198.46.161.42:5092:pklujdep:850ykjxpy8bf
+64.137.10.153:5803:pklujdep:850ykjxpy8bf
+104.164.49.38:7693:pklujdep:850ykjxpy8bf
+23.26.71.145:5628:pklujdep:850ykjxpy8bf
+
+# ---------- Account 8: vmocxrrw ----------
+45.38.107.97:6014:vmocxrrw:84gq1juaq0lf
+64.137.96.74:6641:vmocxrrw:84gq1juaq0lf
+198.23.243.226:6361:vmocxrrw:84gq1juaq0lf
+38.154.185.97:6370:vmocxrrw:84gq1juaq0lf
+84.247.60.125:6095:vmocxrrw:84gq1juaq0lf
+191.96.254.138:6185:vmocxrrw:84gq1juaq0lf
+198.46.161.42:5092:vmocxrrw:84gq1juaq0lf
+64.137.10.153:5803:vmocxrrw:84gq1juaq0lf
+104.164.49.38:7693:vmocxrrw:84gq1juaq0lf
+23.26.71.145:5628:vmocxrrw:84gq1juaq0lf
+
+# ---------- Account 9: fkiuefmd ----------
+31.59.20.176:6754:fkiuefmd:efyq385p8zvw
+45.38.107.97:6014:fkiuefmd:efyq385p8zvw
+64.137.96.74:6641:fkiuefmd:efyq385p8zvw
+198.23.243.226:6361:fkiuefmd:efyq385p8zvw
+38.154.185.97:6370:fkiuefmd:efyq385p8zvw
+84.247.60.125:6095:fkiuefmd:efyq385p8zvw
+142.111.67.146:5611:fkiuefmd:efyq385p8zvw
+191.96.254.138:6185:fkiuefmd:efyq385p8zvw
+31.58.9.4:6077:fkiuefmd:efyq385p8zvw
+198.46.161.42:5092:fkiuefmd:efyq385p8zvw
+
+# ---------- Account 10: dqagenat ----------
+31.59.20.176:6754:dqagenat:iai2pf3xd2vs
+45.38.107.97:6014:dqagenat:iai2pf3xd2vs
+64.137.96.74:6641:dqagenat:iai2pf3xd2vs
+198.23.243.226:6361:dqagenat:iai2pf3xd2vs
+38.154.185.97:6370:dqagenat:iai2pf3xd2vs
+84.247.60.125:6095:dqagenat:iai2pf3xd2vs
+142.111.67.146:5611:dqagenat:iai2pf3xd2vs
+191.96.254.138:6185:dqagenat:iai2pf3xd2vs
+31.58.9.4:6077:dqagenat:iai2pf3xd2vs
+198.46.161.42:5092:dqagenat:iai2pf3xd2vs
 
 # ============================================================
 # SOCKS4 (407 proxies - HTTP only)
