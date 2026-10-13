@@ -1,7 +1,6 @@
 # middlewares/fingerprint_rotator.py
-"""
-Fingerprint Rotator — 21 بصمة مترابطة
-"""
+# Fingerprint Rotator - 21 coherent fingerprints
+# ============================================
 import random
 import logging
 from scrapy import signals
@@ -250,12 +249,12 @@ class FingerprintRotatorMiddleware:
     def spider_opened(self, spider):
         self._current_fingerprint = random.choice(self.FINGERPRINTS)
         logger.info(
-            f"🎭 Fingerprint: {self._current_fingerprint['platform']} | "
+            f"Fingerprint: {self._current_fingerprint['platform']} | "
             f"{self._current_fingerprint['locale']}"
         )
 
     def spider_closed(self, spider):
-        logger.info(f"🎭 Fingerprint requests: {self._session_counter}")
+        logger.info(f"Fingerprint requests: {self._session_counter}")
 
     def process_request(self, request, spider):
         if request.meta.get('fingerprint'):
