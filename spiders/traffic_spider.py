@@ -1,5 +1,4 @@
 # spiders/traffic_spider.py
-import os
 import random
 import scrapy
 from datetime import datetime, timezone
@@ -12,40 +11,28 @@ class TrafficSpider(scrapy.Spider):
     custom_settings = {
         'DOWNLOADER_MIDDLEWARES': {
             'middlewares.fingerprint_rotator.FingerprintRotatorMiddleware': 542,
-            'middlewares.proxy_rotator.FreeProxyRotatorMiddleware': 543,
+            'middlewares.proxy_rotator.FreeProxyRotatorMiddleware': 555,
         },
-        'FREE_PROXY_LIST_URL': 'https://raw.githubusercontent.com/xyzs996/free-proxy-health-list/main/proxies/all/data.txt',
-        'ROTATING_PROXY_PAGE_RETRY_TIMES': 5,
-        'DOWNLOAD_DELAY': 3,
-        'RANDOMIZE_DOWNLOAD_DELAY': True,
-        'CONCURRENT_REQUESTS': 2,
-        'CONCURRENT_REQUESTS_PER_DOMAIN': 1,
-        'AUTOTHROTTLE_ENABLED': True,
-        'AUTOTHROTTLE_START_DELAY': 3,
-        'AUTOTHROTTLE_MAX_DELAY': 15,
-        'AUTOTHROTTLE_TARGET_CONCURRENCY': 1.0,
     }
 
-    # ---------- Class-level constants ----------
     AD_SELECTORS = [
         'ins.adsbygoogle', 'iframe[id*="google_ads"]', 'iframe[src*="doubleclick"]',
-        'iframe[src*="googlesyndication"]', 'div[id^="ad-"]', 'div[class*="advertisement"]',
-        'div[class*="ads-"]', 'div[data-ad-slot]', 'div[data-ad-client]',
+        'iframe[src*="googlesyndication"]', 'div[id^="ad-"]',
+        'div[class*="advertisement"]', 'div[class*="ads-"]',
+        'div[data-ad-slot]', 'div[data-ad-client]',
         'a[href*="adsterra"]', 'a[href*="monetag"]', 'a[href*="propellerads"]',
         'a[href*="mgid"]', 'a[href*="taboola"]', 'a[href*="outbrain"]',
-        'script[src*="adsterra"]', 'script[src*="monetag"]', '.adsense',
-        '.ad-banner', '[class*="banner-ad"]',
+        '.adsense', '.ad-banner', '[class*="banner-ad"]',
     ]
 
     FIELD_SELECTORS = {
-        'email':   ['input[type="email"]', 'input[name*="email" i]', 'input[id*="email" i]'],
-        'name':    ['input[name*="name" i]', 'input[id*="name" i]', 'input[placeholder*="name" i]'],
-        'message': ['textarea[name*="message" i]', 'textarea[id*="message" i]', 'textarea[placeholder*="message" i]'],
+        'email': ['input[type="email"]', 'input[name*="email" i]', 'input[id*="email" i]'],
+        'name': ['input[name*="name" i]', 'input[id*="name" i]', 'input[placeholder*="name" i]'],
+        'message': ['textarea[name*="message" i]', 'textarea[id*="message" i]'],
         'subject': ['input[name*="subject" i]', 'input[id*="subject" i]'],
-        'phone':   ['input[type="tel"]', 'input[name*="phone" i]', 'input[id*="phone" i]'],
+        'phone': ['input[type="tel"]', 'input[name*="phone" i]'],
     }
 
-    # ---------- Lifecycle ----------
     def __init__(self, target_url=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.target_url = (target_url or '').strip() or 'https://www.forjo.tech/'
@@ -55,46 +42,37 @@ class TrafficSpider(scrapy.Spider):
         self.proxy_used = None
 
     def start_requests(self):
-        target = self.target_url
-        if not target.startswith(('http://', 'https://')):
-            target = 'https://' + target
-            self.logger.info(f"Protocol missing. Updated URL to: {target}")
-        self.target_url = target
+        if not self.target_url.startswith(('http://', 'https://')):
+            self.target_url = 'https://' + self.target_url
 
-        current_ua = self.get_random_user_agent()
-        self.logger.info(f"Starting traffic bot for: {self.target_url}")
+        self.logger.info(f"🎬 Starting traffic bot for: {self.target_url}")
 
         yield scrapy.Request(
             url=self.target_url,
             callback=self.parse_main_page,
             errback=self.handle_error,
-            headers={'User-Agent': current_ua},
+            headers={'User-Agent': self.get_random_user_agent()},
             meta={},
             dont_filter=True,
         )
 
     def closed(self, reason):
         self.logger.info(
-            f"Spider closed ({reason}). Total ads clicked: {self.ads_clicked} "
-            f"| Forms filled: {self.forms_filled}"
+            f"🏁 Closed ({reason}) | ads={self.ads_clicked} forms={self.forms_filled}"
         )
 
-    # ---------- Main callbacks ----------
     def parse_main_page(self, response):
         self.visited_urls.add(self.target_url)
         self.proxy_used = response.meta.get('proxy', 'direct')
 
-        # نستقبل tuple: (قائمة الطلبات, العدد)
         ad_requests, ads_count = self.extract_and_click_ads(response)
         form_requests, forms_count = self.extract_and_fill_forms(response)
 
-        # تسليم طلبات الإعلانات والنماذج
         for req in ad_requests:
             yield req
         for req in form_requests:
             yield req
 
-        # تسليم طلبات الروابط الداخلية
         for link in self.extract_internal_links(response)[:3]:
             if link not in self.visited_urls:
                 self.visited_urls.add(link)
@@ -107,11 +85,10 @@ class TrafficSpider(scrapy.Spider):
                     dont_filter=True,
                 )
 
-        # أخيرًا: عنصر الزيارة
         yield self.create_log_entry(response, ads_count, forms_count)
 
     def parse_internal_page(self, response):
-        self.logger.info(f"Visited internal: {response.url} | Status: {response.status}")
+        self.logger.info(f"📄 Visited: {response.url} | Status: {response.status}")
 
         ad_requests, ads_count = self.extract_and_click_ads(response)
         form_requests, forms_count = self.extract_and_fill_forms(response)
@@ -124,29 +101,29 @@ class TrafficSpider(scrapy.Spider):
         yield self.create_log_entry(response, ads_count, forms_count)
 
     def parse_ad_click(self, response):
-        self.logger.info(f"Ad successfully loaded: {response.url} | Status: {response.status}")
+        self.logger.info(f"🎯 Ad loaded: {response.url} | Status: {response.status}")
         yield {
             'type': 'ad_click',
             'url': response.url,
             'status': response.status,
+            'parent_url': response.meta.get('parent_url', ''),
             'timestamp': datetime.now(timezone.utc).isoformat(),
         }
 
     def parse_form_submit(self, response):
-        self.logger.info(f"Form submitted: {response.url} | Status: {response.status}")
+        self.logger.info(f"📝 Form: {response.url} | Status: {response.status}")
         yield {
             'type': 'form_submit',
             'url': response.url,
             'status': response.status,
+            'parent_url': response.meta.get('parent_url', ''),
             'timestamp': datetime.now(timezone.utc).isoformat(),
         }
 
     def handle_error(self, failure):
-        self.logger.error(f"Request failed: {failure.request.url} | {failure.value}")
+        self.logger.error(f"❌ {failure.request.url} | {failure.value}")
 
-    # ---------- Helpers: return tuples, NO yield ----------
     def extract_and_click_ads(self, response):
-        """يُعيد (قائمة الطلبات, عدد الإعلانات المكتشفة)."""
         requests_ = []
         clicked = 0
 
@@ -163,7 +140,6 @@ class TrafficSpider(scrapy.Spider):
                         continue
 
                     full_url = urljoin(response.url, ad_url)
-                    self.logger.info(f"Found ad URL: {full_url}")
                     clicked += 1
 
                     requests_.append(scrapy.Request(
@@ -174,16 +150,19 @@ class TrafficSpider(scrapy.Spider):
                             'User-Agent': self.get_random_user_agent(),
                             'Referer': response.url,
                         },
-                        meta={'ad_click': True},
+                        meta={
+                            'ad_click': True,
+                            'parent_url': response.url,
+                            'proxy': response.meta.get('proxy'),
+                        },
                         dont_filter=True,
                     ))
-                except Exception as e:
-                    self.logger.debug(f"Ad click error: {e}")
+                except Exception:
+                    continue
 
         return requests_, clicked
 
     def extract_and_fill_forms(self, response):
-        """يُعيد (قائمة الطلبات, عدد النماذج المعبّأة)."""
         requests_ = []
         filled = 0
 
@@ -193,7 +172,6 @@ class TrafficSpider(scrapy.Spider):
                 if not form_data:
                     continue
 
-                self.logger.info(f"Found form to fill at index {form_index}")
                 filled += 1
 
                 requests_.append(scrapy.FormRequest.from_response(
@@ -206,16 +184,19 @@ class TrafficSpider(scrapy.Spider):
                         'User-Agent': self.get_random_user_agent(),
                         'Referer': response.url,
                     },
-                    meta={'form_submit': True},
+                    meta={
+                        'form_submit': True,
+                        'parent_url': response.url,
+                        'proxy': response.meta.get('proxy'),
+                    },
                     dont_filter=True,
                 ))
-            except Exception as e:
-                self.logger.debug(f"Form fill error: {e}")
+            except Exception:
+                continue
 
         return requests_, filled
 
     def _build_form_data(self, form):
-        """يبني قاموس بيانات النموذج من الحقول المكتشفة."""
         form_data = {}
         for field_type, selectors in self.FIELD_SELECTORS.items():
             for selector in selectors:
@@ -236,16 +217,15 @@ class TrafficSpider(scrapy.Spider):
                     form_data[name_attr] = self.generate_fake_subject()
                 elif field_type == 'phone':
                     form_data[name_attr] = self.generate_fake_phone()
-                break  # انتقل لنوع الحقل التالي
+                break
         return form_data
 
     def extract_internal_links(self, response):
         links = []
         base_domain = urlparse(self.target_url).netloc
-        skip_exts = (
-            '.jpg', '.jpeg', '.png', '.gif', '.webp', '.ico',
-            '.pdf', '.css', '.js', '.svg',
-        )
+        skip_exts = ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.ico',
+                     '.pdf', '.css', '.js', '.svg')
+
         for href in response.css('a::attr(href)').getall():
             try:
                 full_url = urljoin(response.url, href)
@@ -259,38 +239,42 @@ class TrafficSpider(scrapy.Spider):
                 links.append(full_url)
             except Exception:
                 continue
+
         return links
 
     def get_random_user_agent(self):
-        user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
-            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+        agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0',
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1',
         ]
-        return random.choice(user_agents)
+        return random.choice(agents)
 
-    # ---------- Fake data generators ----------
     def generate_fake_email(self):
-        return f"{random.choice(['john', 'jane', 'alex', 'sarah'])}{random.randint(100, 9999)}@gmail.com"
+        names = ['john', 'jane', 'alex', 'sarah', 'mike', 'lisa']
+        domains = ['gmail.com', 'yahoo.com', 'outlook.com']
+        return f"{random.choice(names)}{random.randint(100, 9999)}@{random.choice(domains)}"
 
     def generate_fake_name(self):
-        return f"{random.choice(['John', 'Jane', 'Alex', 'Sarah'])} {random.choice(['Smith', 'Brown', 'Davis'])}"
+        first = ['John', 'Jane', 'Alex', 'Sarah', 'Mike', 'Lisa']
+        last = ['Smith', 'Brown', 'Davis', 'Wilson', 'Taylor']
+        return f"{random.choice(first)} {random.choice(last)}"
 
     def generate_fake_message(self):
         return random.choice([
-            "Great content!",
-            "Very informative article.",
-            "Looking forward to more posts.",
+            "Great content! Keep up the good work.",
+            "Very informative article, thanks for sharing.",
+            "I enjoyed reading this, very helpful.",
+            "Nice blog, subscribed to your newsletter.",
         ])
 
     def generate_fake_subject(self):
-        return random.choice(['Inquiry', 'Feedback', 'Question'])
+        return random.choice(['Inquiry', 'Feedback', 'Question', 'Support'])
 
     def generate_fake_phone(self):
         return f"+212{random.randint(600000000, 699999999)}"
 
-    # ---------- Log entry ----------
     def create_log_entry(self, response, ads_clicked, forms_filled):
         self.ads_clicked += ads_clicked
         self.forms_filled += forms_filled
@@ -301,5 +285,6 @@ class TrafficSpider(scrapy.Spider):
             'proxy_used': self.proxy_used,
             'ads_clicked': ads_clicked,
             'forms_filled': forms_filled,
+            'mode': 'scrapy',
             'timestamp': datetime.now(timezone.utc).isoformat(),
         }
