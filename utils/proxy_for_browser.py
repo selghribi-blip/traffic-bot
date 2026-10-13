@@ -1,4 +1,48 @@
-# utils/proxy_for_browser.py
+# utils/# utils/proxy_for_browser.py
+import os
+import random
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class BrowserProxyProvider:
+    """يقرأ البروكسيات من manual_proxies.txt ويختار مناسبًا للمتصفح."""
+
+    def __init__(self, path='manual_proxies.txt'):
+        self.path = path
+        self.proxies = []
+        self._load()
+
+    def _load(self):
+        if not os.path.isfile(self.path):
+            return
+        try:
+            with open(self.path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        self.proxies.append(line)
+            logger.info(f"📁 BrowserProxyProvider: {len(self.proxies)} loaded")
+        except Exception as e:
+            logger.warning(f"Failed to load proxies: {e}")
+
+    def pick(self):
+        """يعيد بروكسي مناسب (SOCKS5 مفضل، ثم HTTP)."""
+        if not self.proxies:
+            return None
+
+        # فضّل SOCKS5
+        socks5 = [p for p in self.proxies if p.startswith('socks5')]
+        if socks5:
+            return random.choice(socks5)
+
+        # ثم HTTP
+        http = [p for p in self.proxies if not p.startswith('socks4')]
+        if http:
+            return random.choice(http)
+
+        return None.py
 """
 جسر بين ProxyRotator و BrowserStack/Local.
 يستخرج بروكسيًا صالحًا من قائمة مشتركة.
