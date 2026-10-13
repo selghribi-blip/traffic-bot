@@ -30,10 +30,20 @@ class BrowserStackSpider(scrapy.Spider):
         ('safari', 'OS X', 'Ventura'),
     ]
 
-    AD_CLICK_PROBABILITY = 0.40
-    MAX_AD_CLICKS_PER_SESSION = 2
-    DWELL_TIME_MIN = 30
-    DWELL_TIME_MAX = 90
+    # ============================================================
+    # إعدادات مُحسَّنة للمردودية
+    # ============================================================
+    AD_CLICK_PROBABILITY = 0.80
+    MAX_AD_CLICKS_PER_SESSION = 3
+    DWELL_TIME_MIN = 60
+    DWELL_TIME_MAX = 120
+    INTERNAL_LINKS_MIN = 2
+    INTERNAL_LINKS_MAX = 3
+    SCROLL_MIN = 5
+    SCROLL_MAX = 10
+
+    # انتظار AdSense للتحميل
+    ADSENSE_WAIT = 5
 
     def __init__(self, target_url=None, use_browserstack='true', *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -53,14 +63,14 @@ class BrowserStackSpider(scrapy.Spider):
         if not self.target_url.startswith(('http://', 'https://')):
             self.target_url = 'https://' + self.target_url
 
-        self.logger.info(f"🎬 Starting browser bot for: {self.target_url}")
+        self.logger.info(f"Starting browser bot for: {self.target_url}")
         self.logger.info(f"   Mode: {'BrowserStack' if self.use_browserstack else 'Local'}")
 
         if self.use_browserstack:
             user = os.environ.get('BROWSERSTACK_USERNAME', '').strip()
             key = os.environ.get('BROWSERSTACK_ACCESS_KEY', '').strip()
             if not (user and key):
-                self.logger.warning("⚠️ BrowserStack credentials missing → LOCAL")
+                self.logger.warning("BrowserStack credentials missing - LOCAL")
                 self.use_browserstack = False
 
         yield scrapy.Request(
@@ -93,13 +103,25 @@ class BrowserStackSpider(scrapy.Spider):
                 self.captcha_detected = True
                 raise RuntimeError("Google CAPTCHA detected")
 
+            # 1) تمرير أولي
             self._random_scroll()
 
-            if random.random() < self.AD_CLICK_PROBABILITY:
-                self._safe_click_ads()
+            # 2) انتظار AdSense للتحميل
+            time.sleep(self.ADSENSE_WAIT)
 
+            # 3) نقرات الإعلانات (احتمال 80%)
+            if random.random() < self.AD_CLICK_PROBABILITY:
+                self._safe_click_ads_js()
+            else:
+                self.logger.info("Ad click skipped (probability)")
+
+            # 4) ملء النماذج
             self.forms_filled = self.client.fill_form()
+
+            # 5) نقرات روابط داخلية
             self._click_internal_links()
+
+            # 6) Dwell time
             self._dwell()
 
             try:
@@ -110,7 +132,7 @@ class BrowserStackSpider(scrapy.Spider):
 
             status = 'success'
             self.logger.info(
-                f"✅ Visit successful | ads={self.ads_clicked} "
+                f"Visit successful | ads={self.ads_clicked} "
                 f"forms={self.forms_filled} dwell={self.dwell_time}s "
                 f"scrolls={self.scroll_count} internal={self.internal_clicks}"
             )
@@ -118,7 +140,7 @@ class BrowserStackSpider(scrapy.Spider):
         except Exception as e:
             status = f'error: {e.__class__.__name__}'
             error_msg = str(e)[:200]
-            self.logger.exception(f"❌ Browser failed: {e}")
+            self.logger.error(f"Browser failed: {e}")
 
         finally:
             if self.client:
@@ -143,79 +165,238 @@ class BrowserStackSpider(scrapy.Spider):
             'timestamp': datetime.now(timezone.utc).isoformat(),
         }
 
-    def _safe_click_ads(self):
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.common.action_chains import ActionChains
-
+    # ============================================================
+    # JS-BASED AD CLICKING (القلب الجديد)
+    # ============================================================
+    def _safe_click_ads_js(self):
+        """
+        ينقر على الإعلانات عبر JavaScript (يتجاوز iframes).
+        يعمل مع AdSense, Adsterra, Monetag, PropellerAds, MGID.
+        """
         max_clicks = random.randint(1, self.MAX_AD_CLICKS_PER_SESSION)
-        self.logger.info(f"🖱️ Will try up to {max_clicks} ads")
+        self.logger.info(f"JS Ad clicking: up to {max_clicks} ads")
 
-        clicked_this_session = 0
-        tried_selectors = set()
+        clicked = 0
 
-        for selector in self.client.AD_SELECTORS:
-            if clicked_this_session >= max_clicks:
+        # ============================================================
+        # JS Script 1: النقر على إعلانات AdSense (ins.adsbygoogle)
+        # ============================================================
+        js_adsense = """
+        (() => {
+            const ads = document.querySelectorAll('ins.adsbygoogle');
+            if (ads.length === 0) return null;
+            
+            const ad = ads[Math.floor(Math.random() * ads.length)];
+            ad.scrollIntoView({block: 'center', behavior: 'smooth'});
+            
+            const rect = ad.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            
+            const targets = [
+                document.elementFromPoint(x, y),
+                ad.querySelector('iframe'),
+                ad.firstElementChild,
+                ad,
+            ].filter(t => t);
+            
+            for (const t of targets) {
+                try {
+                    t.click();
+                    const evt = new MouseEvent('click', {
+                        bubbles: true, cancelable: true, view: window,
+                        clientX: x, clientY: y
+                    });
+                    t.dispatchEvent(evt);
+                    return 'adsbygoogle';
+                } catch(e) {}
+            }
+            return null;
+        })();
+        """
+
+        # ============================================================
+        # JS Script 2: النقر على iframes الإعلانية
+        # ============================================================
+        js_iframes = """
+        (() => {
+            const selectors = [
+                'iframe[src*="doubleclick"]',
+                'iframe[src*="googlesyndication"]',
+                'iframe[id*="google_ads"]',
+                'iframe[src*="effectivecpmnetwork"]',
+                'iframe[src*="highperformanceformat"]',
+                'iframe[src*="adsterra"]',
+                'iframe[src*="propellerads"]',
+                'iframe[src*="mgid"]',
+                'iframe[src*="monetag"]',
+            ];
+            const allIframes = [];
+            for (const sel of selectors) {
+                document.querySelectorAll(sel).forEach(f => allIframes.push([sel, f]));
+            }
+            if (allIframes.length === 0) return null;
+            
+            const [sel, iframe] = allIframes[Math.floor(Math.random() * allIframes.length)];
+            iframe.scrollIntoView({block: 'center', behavior: 'smooth'});
+            
+            const rect = iframe.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            
+            const evt = new MouseEvent('click', {
+                bubbles: true, cancelable: true, view: window,
+                clientX: x, clientY: y, button: 0
+            });
+            iframe.dispatchEvent(evt);
+            
+            const el = document.elementFromPoint(x, y);
+            if (el && el !== iframe) {
+                try { el.click(); el.dispatchEvent(evt); } catch(e) {}
+            }
+            try { iframe.click(); } catch(e) {}
+            
+            return sel;
+        })();
+        """
+
+        # ============================================================
+        # JS Script 3: النقر على روابط إعلانية مباشرة
+        # ============================================================
+        js_links = """
+        (() => {
+            const selectors = [
+                'a[href*="adsterra"]',
+                'a[href*="monetag"]',
+                'a[href*="propellerads"]',
+                'a[href*="effectivecpmnetwork"]',
+                'a[href*="highperformanceformat"]',
+                'a[href*="mgid"]',
+                'a[href*="taboola"]',
+                'a[href*="outbrain"]',
+                'div[id^="ad-"]',
+                'div[class*="advertisement"]',
+                'div[class*="ad-banner"]',
+                '[class*="banner-ad"]',
+                '.adsense',
+            ];
+            for (const sel of selectors) {
+                const els = document.querySelectorAll(sel);
+                if (els.length > 0) {
+                    const el = els[Math.floor(Math.random() * els.length)];
+                    el.scrollIntoView({block: 'center', behavior: 'smooth'});
+                    
+                    const rect = el.getBoundingClientRect();
+                    const x = rect.left + rect.width / 2;
+                    const y = rect.top + rect.height / 2;
+                    
+                    const evt = new MouseEvent('click', {
+                        bubbles: true, cancelable: true, view: window,
+                        clientX: x, clientY: y, button: 0
+                    });
+                    try {
+                        el.click();
+                        el.dispatchEvent(evt);
+                        return sel;
+                    } catch(e) {}
+                }
+            }
+            return null;
+        })();
+        """
+
+        # ============================================================
+        # JS Script 4: النقر على iframe عبر Offsets (احتياطي)
+        # ============================================================
+        js_offset = """
+        (() => {
+            const allEls = document.querySelectorAll('*');
+            const candidates = [];
+            for (const el of allEls) {
+                const rect = el.getBoundingClientRect();
+                if (rect.width >= 200 && rect.height >= 50 && rect.width <= 800 && rect.height <= 400) {
+                    const cls = (el.className || '').toString().toLowerCase();
+                    const id = (el.id || '').toString().toLowerCase();
+                    if (cls.includes('ad') || id.includes('ad') ||
+                        cls.includes('banner') || cls.includes('sponsor')) {
+                        candidates.push(el);
+                    }
+                }
+            }
+            if (candidates.length === 0) return null;
+            const el = candidates[Math.floor(Math.random() * candidates.length)];
+            el.scrollIntoView({block: 'center'});
+            const rect = el.getBoundingClientRect();
+            const evt = new MouseEvent('click', {
+                bubbles: true, cancelable: true, view: window,
+                clientX: rect.left + rect.width / 2,
+                clientY: rect.top + rect.height / 2,
+                button: 0
+            });
+            try { el.click(); el.dispatchEvent(evt); return 'offset'; } catch(e) {}
+            return null;
+        })();
+        """
+
+        scripts = [
+            ('adsense', js_adsense),
+            ('iframes', js_iframes),
+            ('links', js_links),
+            ('offset', js_offset),
+        ]
+
+        random.shuffle(scripts)
+
+        for script_name, script_code in scripts:
+            if clicked >= max_clicks:
                 break
-            if selector in tried_selectors:
-                continue
-            tried_selectors.add(selector)
 
             try:
-                elements = self.client.driver.find_elements(By.CSS_SELECTOR, selector)
-                if not elements:
-                    continue
-                element = random.choice(elements[:5])
-                if not (element.is_displayed() and element.is_enabled()):
-                    continue
+                result = self.client.driver.execute_script(script_code)
+                if result:
+                    clicked += 1
+                    self.ads_clicked += 1
+                    self.logger.info(f"Ad clicked via {script_name}: {result}")
 
-                self.client.driver.execute_script(
-                    "arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});",
-                    element
-                )
-                time.sleep(random.uniform(1.0, 2.5))
+                    # انتظار بعد النقر
+                    time.sleep(random.uniform(4.0, 8.0))
 
-                try:
-                    ActionChains(self.client.driver).move_to_element(element).pause(
-                        random.uniform(0.3, 0.8)
-                    ).perform()
-                except Exception:
-                    pass
+                    # أغلق التبويبات الجديدة
+                    self._close_extra_tabs()
 
-                if not element.is_displayed():
-                    continue
+                    # انتظار قبل النقر التالي
+                    time.sleep(random.uniform(2.0, 4.0))
 
-                try:
-                    element.click()
-                except Exception:
-                    self.client.driver.execute_script("arguments[0].click();", element)
+                    # تمرير بسيط
+                    self.client.driver.execute_script(
+                        "window.scrollBy({top: 300, behavior: 'smooth'});"
+                    )
+                    time.sleep(random.uniform(1.0, 2.0))
 
-                clicked_this_session += 1
-                self.ads_clicked += 1
-                self.logger.info(f"🎯 Ad clicked: {selector}")
+            except Exception as e:
+                self.logger.debug(f"Script {script_name} failed: {e}")
 
-                time.sleep(random.uniform(3.0, 7.0))
+        self.logger.info(f"Total ads clicked via JS: {clicked}")
 
-                try:
-                    if len(self.client.driver.window_handles) > 1:
-                        main = self.client.driver.window_handles[0]
-                        for handle in self.client.driver.window_handles[1:]:
-                            self.client.driver.switch_to.window(handle)
-                            time.sleep(random.uniform(2.0, 4.0))
-                            self.client.driver.close()
-                        self.client.driver.switch_to.window(main)
-                except Exception:
-                    pass
+    def _close_extra_tabs(self):
+        """يغلق التبويبات الجديدة."""
+        try:
+            if len(self.client.driver.window_handles) > 1:
+                main = self.client.driver.window_handles[0]
+                for handle in self.client.driver.window_handles[1:]:
+                    self.client.driver.switch_to.window(handle)
+                    time.sleep(random.uniform(1.5, 3.0))
+                    self.client.driver.close()
+                self.client.driver.switch_to.window(main)
+        except Exception:
+            pass
 
-                time.sleep(random.uniform(2.0, 5.0))
-
-            except Exception:
-                continue
-
-        self.logger.info(f"🖱️ Total ads clicked: {clicked_this_session}")
-
+    # ============================================================
+    # SCROLL
+    # ============================================================
     def _random_scroll(self):
         try:
-            count = random.randint(3, 7)
+            count = random.randint(self.SCROLL_MIN, self.SCROLL_MAX)
             for i in range(count):
                 pixels = random.randint(300, 800)
                 self.client.driver.execute_script(
@@ -231,14 +412,21 @@ class BrowserStackSpider(scrapy.Spider):
         except Exception:
             pass
 
+    # ============================================================
+    # INTERNAL LINKS
+    # ============================================================
     def _click_internal_links(self):
         from selenium.webdriver.common.by import By
         try:
-            count = random.randint(1, 2)
+            count = random.randint(self.INTERNAL_LINKS_MIN, self.INTERNAL_LINKS_MAX)
             clicked = 0
             selectors = [
-                'article a:not([href^="#"])', 'h2 a', 'h3 a',
-                '.post-title a', '.entry-title a',
+                'article a:not([href^="#"])',
+                'h2 a',
+                'h3 a',
+                '.post-title a',
+                '.entry-title a',
+                'main a:not([href^="#"])',
             ]
             for selector in selectors:
                 if clicked >= count:
@@ -271,14 +459,17 @@ class BrowserStackSpider(scrapy.Spider):
         except Exception:
             pass
 
+    # ============================================================
+    # DWELL
+    # ============================================================
     def _dwell(self):
         try:
             duration = random.randint(self.DWELL_TIME_MIN, self.DWELL_TIME_MAX)
-            self.logger.info(f"⏳ Dwelling {duration}s...")
+            self.logger.info(f"Dwelling {duration}s...")
             start = time.time()
             while time.time() - start < duration:
                 time.sleep(random.uniform(5, 12))
-                if random.random() < 0.5:
+                if random.random() < 0.6:
                     try:
                         self.client.driver.execute_script(
                             f"window.scrollBy({{top: {random.randint(200, 500)}, behavior: 'smooth'}});"
@@ -287,8 +478,11 @@ class BrowserStackSpider(scrapy.Spider):
                         pass
             self.dwell_time = int(time.time() - start)
         except Exception:
-            self.dwell_time = 30
+            self.dwell_time = 60
 
+    # ============================================================
+    # PROXY
+    # ============================================================
     def _pick_proxy(self):
         if os.environ.get('DISABLE_PROXIES', 'false').lower() == 'true':
             return None
@@ -298,12 +492,15 @@ class BrowserStackSpider(scrapy.Spider):
             self._proxy_provider = BrowserProxyProvider()
         return self._proxy_provider.pick()
 
+    # ============================================================
+    # SESSION STARTERS
+    # ============================================================
     def _start_browserstack(self, proxy=None):
         username = os.environ.get('BROWSERSTACK_USERNAME', '').strip()
         access_key = os.environ.get('BROWSERSTACK_ACCESS_KEY', '').strip()
         self.client = BrowserStackClient(username, access_key)
         browser, os_name, os_version = random.choice(self.BROWSERSTACK_BROWSERS)
-        self.logger.info(f"🖥️ BrowserStack: {browser} on {os_name} {os_version}")
+        self.logger.info(f"BrowserStack: {browser} on {os_name} {os_version}")
         return self.client.start_session(
             url=self.target_url,
             browser=browser,
@@ -315,7 +512,7 @@ class BrowserStackSpider(scrapy.Spider):
 
     def _start_local(self, proxy=None):
         self.client = LocalBrowserClient()
-        self.logger.info("🖥️ Local Chrome")
+        self.logger.info("Local Chrome")
         return self.client.start_session(
             url=self.target_url,
             headless=True,
@@ -323,9 +520,9 @@ class BrowserStackSpider(scrapy.Spider):
         )
 
     def handle_error(self, failure):
-        self.logger.error(f"❌ {failure.request.url} | {failure.value}")
+        self.logger.error(f"{failure.request.url} | {failure.value}")
 
     def closed(self, reason):
         self.logger.info(
-            f"🏁 Closed ({reason}) | ads={self.ads_clicked} forms={self.forms_filled}"
+            f"Closed ({reason}) | ads={self.ads_clicked} forms={self.forms_filled}"
         )
