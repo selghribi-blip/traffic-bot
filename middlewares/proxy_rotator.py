@@ -1,12 +1,17 @@
 # middlewares/proxy_rotator.py
-# Proxy Rotator - Ultimate Production Version
+# Proxy Rotator - with section headers support
 # ============================================
-# - 3 pools: socks4, socks5, http
-# - Format support: ip:port, ip:port:user:pass, user:pass@ip:port, schemes
-# - Healthcheck parallel
-# - Google CAPTCHA detection
-# - Instant dead proxy removal
-# - HTTP fallback after SOCKS failures
+# Supported formats in manual_proxies.txt:
+#   - ip:port                       (uses current section)
+#   - ip:port:user:pass             (HTTP auth)
+#   - user:pass@ip:port             (HTTP auth)
+#   - socks4://ip:port              (explicit)
+#   - socks5://ip:port              (explicit)
+#   - http://ip:port                (explicit)
+# Section headers:
+#   # SOCKS4
+#   # SOCKS5
+#   # HTTP
 
 import os
 import re
@@ -26,8 +31,6 @@ class FreeProxyRotatorMiddleware:
     HTTP_SOURCES = [
         'https://raw.githubusercontent.com/xyzs996/free-proxy-health-list/main/proxies/protocols/http/data.txt',
         'https://raw.githubusercontent.com/dinoz0rg/proxy-list/main/checked_proxies/http.txt',
-        'https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/http/data.txt',
-        'https://raw.githubusercontent.com/Thordata/awesome-free-proxy-list/main/proxies/top-trusted.txt',
     ]
 
     MAX_FAILURES = 1
@@ -45,17 +48,8 @@ class FreeProxyRotatorMiddleware:
         'consent.google.com',
     ]
 
-    def __init__(self, proxies, healthcheck_enabled=False):
-        self.pools = {'socks4': [], 'socks5': [], 'http': []}
-        for p in proxies:
-            scheme = self._scheme(p)
-            if scheme in ('socks4', 'socks4a'):
-                self.pools['socks4'].append(p)
-            elif scheme in ('socks5', 'socks5h'):
-                self.pools['socks5'].append(p)
-            else:
-                self.pools['http'].append(p)
-
+    def __init__(self, pools, healthcheck_enabled=False):
+        self.pools = pools  # {'socks4': [], 'socks5': [], 'http': []}
         self.failures = {}
         self.used_by_pool = {k: 0 for k in self.pools}
         self.dead_removed = {k: 0 for k in self.pools}
@@ -72,25 +66,26 @@ class FreeProxyRotatorMiddleware:
         if os.environ.get('DISABLE_PROXIES', 'false').lower() == 'true':
             raise NotConfigured("Disabled by env")
 
-        proxies = set()
+        pools = {'socks4': [], 'socks5': [], 'http': []}
 
+        # 1) Parse manual_proxies.txt with section headers
         manual_file = os.environ.get('MANUAL_PROXY_FILE', 'manual_proxies.txt')
         if os.path.isfile(manual_file):
-            count_before = len(proxies)
-            with open(manual_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        proxies.add(line)
-            logger.info(f"Manual proxies: {len(proxies) - count_before}")
+            parsed = cls._parse_manual_file(manual_file)
+            for k in pools:
+                pools[k].extend(parsed[k])
+            total = sum(len(v) for v in parsed.values())
+            logger.info(f"Manual proxies: {total}")
 
+        # 2) env
         manual_env = os.environ.get('MANUAL_PROXIES', '').strip()
         if manual_env:
             for p in re.split(r'[,\n]', manual_env):
                 p = p.strip()
                 if p:
-                    proxies.add(p)
+                    pools['http'].append(p)
 
+        # 3) Remote HTTP sources
         if os.environ.get('FETCH_REMOTE_PROXIES', 'true').lower() == 'true':
             for url in cls.HTTP_SOURCES:
                 try:
@@ -100,28 +95,90 @@ class FreeProxyRotatorMiddleware:
                     for line in r.text.splitlines():
                         line = line.strip()
                         if line and not line.startswith('#') and ':' in line:
-                            proxies.add(line)
+                            pools['http'].append(line)
                             count += 1
                     logger.info(f"Remote {url.split('/')[4]}: {count} HTTP")
                 except Exception as e:
                     logger.warning(f"Failed {url}: {e}")
 
-        if not proxies:
+        total = sum(len(v) for v in pools.values())
+        if total == 0:
             raise NotConfigured("No proxies available")
 
-        proxies = list(proxies)
-        random.shuffle(proxies)
+        # Shuffle each pool
+        for k in pools:
+            random.shuffle(pools[k])
 
+        # Health check
         healthcheck = os.environ.get('PROXY_HEALTHCHECK', 'false').lower() == 'true'
         if healthcheck:
-            proxies = cls._filter_alive(proxies)
+            for k in pools:
+                if pools[k]:
+                    pools[k] = cls._filter_alive(pools[k], k)
 
-        mw = cls(proxies, healthcheck)
+        mw = cls(pools, healthcheck)
         crawler.signals.connect(mw.spider_closed, signal=signals.spider_closed)
         return mw
 
+    # ============================================================
+    # PARSE manual_proxies.txt WITH SECTIONS
+    # ============================================================
     @classmethod
-    def _filter_alive(cls, proxies):
+    def _parse_manual_file(cls, path):
+        """
+        Parse file with section headers.
+        Supports:
+          # SOCKS4          -> current_scheme = socks4
+          # SOCKS5          -> current_scheme = socks5
+          # HTTP            -> current_scheme = http
+        Also detects explicit schemes in lines.
+        """
+        pools = {'socks4': [], 'socks5': [], 'http': []}
+        current_scheme = 'http'  # default
+
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Section header detection
+                if line.startswith('#'):
+                    lower = line.lower()
+                    if 'socks4' in lower or 'socks 4' in lower:
+                        current_scheme = 'socks4'
+                    elif 'socks5' in lower or 'socks 5' in lower:
+                        current_scheme = 'socks5'
+                    elif 'http' in lower:
+                        current_scheme = 'http'
+                    continue
+
+                # Explicit scheme in line
+                if '://' in line:
+                    scheme = line.split('://', 1)[0].lower()
+                    if scheme in ('socks4', 'socks4a'):
+                        pools['socks4'].append(line)
+                    elif scheme in ('socks5', 'socks5h'):
+                        pools['socks5'].append(line)
+                    else:
+                        pools['http'].append(line)
+                    continue
+
+                # Plain format - use current section
+                if current_scheme == 'socks4':
+                    pools['socks4'].append(f"socks4://{line}")
+                elif current_scheme == 'socks5':
+                    pools['socks5'].append(f"socks5h://{line}")
+                else:
+                    pools['http'].append(line)
+
+        return pools
+
+    # ============================================================
+    # HEALTHCHECK
+    # ============================================================
+    @classmethod
+    def _filter_alive(cls, proxies, pool_name):
         sample_size = min(cls.HEALTHCHECK_SAMPLE, len(proxies))
         sample_list = random.sample(proxies, sample_size)
         alive = []
@@ -142,7 +199,7 @@ class FreeProxyRotatorMiddleware:
                 pass
             return None
 
-        logger.info(f"Health-checking {sample_size} proxies...")
+        logger.info(f"Health-checking {sample_size} {pool_name} proxies...")
         with ThreadPoolExecutor(max_workers=cls.HEALTHCHECK_WORKERS) as ex:
             futures = {ex.submit(check, p): p for p in sample_list}
             for fut in as_completed(futures):
@@ -150,18 +207,15 @@ class FreeProxyRotatorMiddleware:
                 if res:
                     alive.append(res)
 
-        logger.info(f"Alive: {len(alive)}/{sample_size}")
+        logger.info(f"Alive {pool_name}: {len(alive)}/{sample_size}")
         return alive or sample_list
 
-    @staticmethod
-    def _scheme(raw: str) -> str:
-        raw = raw.strip().lower()
-        if '://' in raw:
-            return raw.split('://', 1)[0]
-        return 'http'
-
+    # ============================================================
+    # FORMAT PROXY
+    # ============================================================
     @staticmethod
     def _format_proxy(raw: str) -> str:
+        """Return URL form for Scrapy."""
         raw = raw.strip()
         if not raw:
             return None
@@ -177,10 +231,16 @@ class FreeProxyRotatorMiddleware:
             return f"http://{raw}"
         return f"http://{raw}"
 
+    # ============================================================
+    # CAPTCHA DETECTION
+    # ============================================================
     def _is_google_captcha(self, response):
         url = response.url.lower()
         return any(p in url for p in self.GOOGLE_CAPTCHA_PATTERNS)
 
+    # ============================================================
+    # POOL SELECTION
+    # ============================================================
     def _pick_pool_for_url(self, url):
         scheme = urlparse(url).scheme.lower()
         if scheme == 'http':
@@ -188,6 +248,7 @@ class FreeProxyRotatorMiddleware:
                 if self.pools[name]:
                     return name
         else:
+            # HTTPS: prefer SOCKS5, then HTTP, no SOCKS4
             if self.socks_fail_count >= self.SOCKS_FAILS_BEFORE_HTTP:
                 if self.pools['http']:
                     return 'http'
@@ -196,6 +257,9 @@ class FreeProxyRotatorMiddleware:
                     return name
         return None
 
+    # ============================================================
+    # PROCESS REQUEST
+    # ============================================================
     def process_request(self, request, spider):
         swaps = request.meta.get('_proxy_swaps', 0)
         if swaps >= self.MAX_SWAPS_PER_REQUEST:
@@ -227,6 +291,9 @@ class FreeProxyRotatorMiddleware:
         self.used_by_pool[pool_name] += 1
         return None
 
+    # ============================================================
+    # PROCESS RESPONSE
+    # ============================================================
     def process_response(self, request, response, spider):
         raw = request.meta.get('_raw_proxy')
         pool = request.meta.get('_proxy_pool')
@@ -249,6 +316,9 @@ class FreeProxyRotatorMiddleware:
 
         return response
 
+    # ============================================================
+    # PROCESS EXCEPTION
+    # ============================================================
     def process_exception(self, request, exception, spider):
         raw = request.meta.get('_raw_proxy')
         pool = request.meta.get('_proxy_pool')
@@ -274,6 +344,9 @@ class FreeProxyRotatorMiddleware:
                 self.pools[pool_name].remove(raw)
                 self.dead_removed[pool_name] += 1
 
+    # ============================================================
+    # FINAL REPORT
+    # ============================================================
     def spider_closed(self, spider):
         logger.info(
             "\n"
