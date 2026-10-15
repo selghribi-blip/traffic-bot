@@ -14,7 +14,7 @@ on:
         required: false
         default: 'both'
         type: choice
-        options: [both, scrapy, browserstack, local]
+        options: [both, scrapy, browserstack, local, export]
 
 permissions:
   actions: write
@@ -141,15 +141,16 @@ jobs:
           retention-days: 3
 
   # ============================================================
-  # 3) BROWSERSTACK - manual only
+  # 3) BROWSERSTACK - 3x daily (8-hour gaps)
   # ============================================================
   run-browserstack-spider:
     name: BrowserStack
     if: |
+      github.event_name == 'schedule' ||
       github.event.inputs.run_mode == 'both' ||
       github.event.inputs.run_mode == 'browserstack'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -186,7 +187,44 @@ jobs:
           retention-days: 3
 
   # ============================================================
-  # 4) AGGREGATE
+  # 4) EXPORT DATA (Manual / Scheduled)
+  # ============================================================
+  export-data:
+    name: Export Data
+    if: |
+      github.event.inputs.run_mode == 'export'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pymongo pandas openpyxl
+
+      - name: Export MongoDB to CSV + Excel
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          EXPORT_DAYS: '7'
+          EXPORT_DIR: './exports'
+        run: |
+          python scripts/export_mongo.py
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mongo-exports
+          path: exports/
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # ============================================================
+  # 5) AGGREGATE
   # ============================================================
   aggregate-results:
     name: Aggregate
@@ -253,7 +291,7 @@ jobs:
           echo "Scrapy items: $scrapy_count"
 
   # ============================================================
-  # 5) CLEANUP
+  # 6) CLEANUP
   # ============================================================
   cleanup:
     name: Cleanup
