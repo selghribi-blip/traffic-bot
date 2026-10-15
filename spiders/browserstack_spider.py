@@ -30,9 +30,9 @@ class BrowserStackSpider(scrapy.Spider):
     ]
 
     # ============================================================
-    # إعدادات مُحسَّنة للمردودية
+    # Optimized settings for revenue
     # ============================================================
-    AD_CLICK_PROBABILITY = 0.90
+    AD_CLICK_PROBABILITY = 0.95
     MAX_AD_CLICKS_PER_SESSION = 3
     DWELL_TIME_MIN = 60
     DWELL_TIME_MAX = 120
@@ -40,7 +40,7 @@ class BrowserStackSpider(scrapy.Spider):
     INTERNAL_LINKS_MAX = 3
     SCROLL_MIN = 5
     SCROLL_MAX = 10
-    ADS_WAIT = 12  # انتظار تحميل Adsterra/Monetag
+    ADS_WAIT = 15  # Wait for Adsterra/Monetag to load
 
     def __init__(self, target_url=None, use_browserstack='true', *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -100,25 +100,28 @@ class BrowserStackSpider(scrapy.Spider):
                 self.captcha_detected = True
                 raise RuntimeError("Google CAPTCHA detected")
 
-            # 1) تمرير أولي لتحميل الإعلانات
+            # 1) Initial scroll to load ads
             self._random_scroll()
 
-            # 2) انتظار Adsterra/Monetag
+            # 2) Wait for Adsterra/Monetag
             time.sleep(self.ADS_WAIT)
 
-            # 3) نقرات الإعلانات (احتمال 90%)
+            # 3) Trigger Monetag (any click)
+            self._trigger_monetag()
+
+            # 4) Ad clicks (95% probability)
             if random.random() < self.AD_CLICK_PROBABILITY:
                 self._click_adsterra_monetag()
             else:
                 self.logger.info("Ad click skipped (probability)")
 
-            # 4) ملء النماذج
+            # 5) Fill forms
             self.forms_filled = self.client.fill_form()
 
-            # 5) روابط داخلية
+            # 6) Internal links
             self._click_internal_links()
 
-            # 6) Dwell
+            # 7) Dwell
             self._dwell()
 
             try:
@@ -163,21 +166,48 @@ class BrowserStackSpider(scrapy.Spider):
         }
 
     # ============================================================
-    # ADSTERRA + MONETAG CLICKING (with ad detection)
+    # TRIGGER MONETAG (Service Worker)
+    # ============================================================
+    def _trigger_monetag(self):
+        """Monetag is triggered by ANY user click. Simulate one."""
+        try:
+            self.client.driver.execute_script("""
+                (() => {
+                    const x = window.innerWidth / 2;
+                    const y = window.innerHeight / 2;
+                    const el = document.elementFromPoint(x, y);
+                    if (el) {
+                        el.dispatchEvent(new MouseEvent('click', {
+                            bubbles: true, cancelable: true, view: window,
+                            clientX: x, clientY: y, button: 0
+                        }));
+                        try { el.click(); } catch(e) {}
+                        return true;
+                    }
+                    return false;
+                })();
+            """)
+            time.sleep(2)
+            self.logger.info("Monetag triggered via center click")
+        except Exception as e:
+            self.logger.debug(f"Monetag trigger failed: {e}")
+
+    # ============================================================
+    # ADSTERRA + MONETAG CLICKING
     # ============================================================
     def _click_adsterra_monetag(self):
         """
-        ينقر على إعلانات Adsterra و Monetag.
-        1) ينتظر ظهور إعلان في DOM (حتى 8 ثوان)
-        2) يجرب 5 سكريبتات JS بترتيب عشوائي
-        3) يغلق أي تبويب جديد (Popunder)
+        Clicks Adsterra and Monetag ads.
+        1) Wait for ad to appear in DOM (up to 8s)
+        2) Try 5 JS scripts in random order
+        3) Close any new tab (Popunder)
         """
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
 
         # ============================================================
-        # 1) انتظر ظهور أي إعلان أولًا
+        # 1) Wait for ad in DOM
         # ============================================================
         self.logger.info("Waiting for ads to appear in DOM...")
         ad_found = False
@@ -188,7 +218,6 @@ class BrowserStackSpider(scrapy.Spider):
             'iframe[src*="profitableratecpmnetwork"]',
             'iframe[src*="highperformanceformat"]',
             'div[id^="container-"]',
-            'meta[name="monetag"]',
         ]
 
         for selector in ad_selectors:
@@ -206,7 +235,7 @@ class BrowserStackSpider(scrapy.Spider):
             self.logger.warning("No ad elements found in DOM after 8s wait")
 
         # ============================================================
-        # 2) نقرات الإعلانات
+        # 2) Ad clicks
         # ============================================================
         max_clicks = random.randint(1, self.MAX_AD_CLICKS_PER_SESSION)
         self.logger.info(f"Adsterra/Monetag clicking: up to {max_clicks} ads")
@@ -309,7 +338,7 @@ class BrowserStackSpider(scrapy.Spider):
         })();
         """
 
-        # --- Script 4: أي iframe إعلاني ---
+        # --- Script 4: Any ad iframe ---
         js_any_iframe = """
         (() => {
             const iframes = Array.from(document.querySelectorAll('iframe')).filter(f => {
@@ -335,7 +364,7 @@ class BrowserStackSpider(scrapy.Spider):
         })();
         """
 
-        # --- Script 5: أي عنصر بحجم إعلان ---
+        # --- Script 5: Any ad-sized element ---
         js_any_ad = """
         (() => {
             const all = document.querySelectorAll('*');
@@ -371,7 +400,7 @@ class BrowserStackSpider(scrapy.Spider):
         """
 
         # ============================================================
-        # 3) تشغيل السكريبتات بترتيب عشوائي
+        # 3) Run scripts in random order
         # ============================================================
         scripts = [
             ('native', js_native),
@@ -393,15 +422,10 @@ class BrowserStackSpider(scrapy.Spider):
                     self.ads_clicked += 1
                     self.logger.info(f"Ad clicked via {script_name}: {result}")
 
-                    # انتظار بعد النقر
                     time.sleep(random.uniform(4.0, 8.0))
-
-                    # أغلق التبويبات الجديدة (Adsterra Popunder)
                     self._close_extra_tabs()
-
                     time.sleep(random.uniform(2.0, 4.0))
 
-                    # تمرير بسيط
                     try:
                         self.client.driver.execute_script(
                             "window.scrollBy({top: 300, behavior: 'smooth'});"
@@ -418,7 +442,7 @@ class BrowserStackSpider(scrapy.Spider):
         self.logger.info(f"Total ads clicked: {clicked}")
 
     def _close_extra_tabs(self):
-        """يغلق تبويبات Adsterra Popunder."""
+        """Closes Adsterra Popunder tabs."""
         try:
             handles = self.client.driver.window_handles
             if len(handles) > 1:
