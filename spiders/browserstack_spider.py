@@ -1,5 +1,5 @@
 # spiders/browserstack_spider.py
-# Adsterra + Monetag optimized
+# Adsterra + Monetag optimized with ad detection
 import os
 import random
 import time
@@ -163,27 +163,57 @@ class BrowserStackSpider(scrapy.Spider):
         }
 
     # ============================================================
-    # ADSTERRA + MONETAG CLICKING (القلب الجديد)
+    # ADSTERRA + MONETAG CLICKING (with ad detection)
     # ============================================================
     def _click_adsterra_monetag(self):
         """
         ينقر على إعلانات Adsterra و Monetag.
-        
-        أنواع الإعلانات:
-        - Adsterra Popunder: opens new tab on click
-        - Adsterra Social Bar: iframe قابل للنقر
-        - Adsterra Native Bar: container div
-        - Adsterra Banners: iframes بأحجام ثابتة
-        - Monetag: script tags + containers
+        1) ينتظر ظهور إعلان في DOM (حتى 8 ثوان)
+        2) يجرب 5 سكريبتات JS بترتيب عشوائي
+        3) يغلق أي تبويب جديد (Popunder)
         """
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+
+        # ============================================================
+        # 1) انتظر ظهور أي إعلان أولًا
+        # ============================================================
+        self.logger.info("Waiting for ads to appear in DOM...")
+        ad_found = False
+
+        ad_selectors = [
+            'iframe[src*="highrevenueformat"]',
+            'iframe[src*="effectivecpmnetwork"]',
+            'iframe[src*="profitableratecpmnetwork"]',
+            'iframe[src*="highperformanceformat"]',
+            'div[id^="container-"]',
+            'meta[name="monetag"]',
+        ]
+
+        for selector in ad_selectors:
+            try:
+                WebDriverWait(self.client.driver, 8).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                )
+                self.logger.info(f"Ad detected: {selector}")
+                ad_found = True
+                break
+            except Exception:
+                continue
+
+        if not ad_found:
+            self.logger.warning("No ad elements found in DOM after 8s wait")
+
+        # ============================================================
+        # 2) نقرات الإعلانات
+        # ============================================================
         max_clicks = random.randint(1, self.MAX_AD_CLICKS_PER_SESSION)
         self.logger.info(f"Adsterra/Monetag clicking: up to {max_clicks} ads")
 
         clicked = 0
 
-        # ============================================================
-        # Script 1: Adsterra Native Bar
-        # ============================================================
+        # --- Script 1: Adsterra Native Bar ---
         js_native = """
         (() => {
             const containers = document.querySelectorAll('[id^="container-"]');
@@ -215,9 +245,7 @@ class BrowserStackSpider(scrapy.Spider):
         })();
         """
 
-        # ============================================================
-        # Script 2: Adsterra Banners (highrevenueformat.com)
-        # ============================================================
+        # --- Script 2: Adsterra Banners ---
         js_banners = """
         (() => {
             const iframes = document.querySelectorAll('iframe');
@@ -253,16 +281,14 @@ class BrowserStackSpider(scrapy.Spider):
         })();
         """
 
-        # ============================================================
-        # Script 3: Monetag (quge5.com)
-        # ============================================================
+        # --- Script 3: Monetag ---
         js_monetag = """
         (() => {
             const meta = document.querySelector('meta[name="monetag"]');
             const hasMonetag = meta || (window.location.href.includes('quge5') ||
                                 document.documentElement.innerHTML.includes('quge5.com'));
             if (!hasMonetag) return null;
-            
+
             const clickable = document.querySelectorAll(
                 'a[href*="quge5"], a[href*="monetag"], '
                 + '[class*="monetag"], [id*="monetag"], '
@@ -283,9 +309,7 @@ class BrowserStackSpider(scrapy.Spider):
         })();
         """
 
-        # ============================================================
-        # Script 4: عام - أي iframe إعلاني
-        # ============================================================
+        # --- Script 4: أي iframe إعلاني ---
         js_any_iframe = """
         (() => {
             const iframes = Array.from(document.querySelectorAll('iframe')).filter(f => {
@@ -311,9 +335,7 @@ class BrowserStackSpider(scrapy.Spider):
         })();
         """
 
-        # ============================================================
-        # Script 5: عام - أي عنصر بحجم إعلان
-        # ============================================================
+        # --- Script 5: أي عنصر بحجم إعلان ---
         js_any_ad = """
         (() => {
             const all = document.querySelectorAll('*');
@@ -349,7 +371,7 @@ class BrowserStackSpider(scrapy.Spider):
         """
 
         # ============================================================
-        # تشغيل السكريبتات بترتيب عشوائي
+        # 3) تشغيل السكريبتات بترتيب عشوائي
         # ============================================================
         scripts = [
             ('native', js_native),
