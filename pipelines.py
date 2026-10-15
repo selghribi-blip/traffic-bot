@@ -16,10 +16,24 @@ from scrapy.exceptions import NotConfigured
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_mongo_uri(uri):
+    """Strip whitespace, quotes, newlines from URI."""
+    if not uri:
+        return ''
+    uri = str(uri).strip()
+    # Remove surrounding quotes
+    if (uri.startswith('"') and uri.endswith('"')) or \
+       (uri.startswith("'") and uri.endswith("'")):
+        uri = uri[1:-1]
+    # Remove ALL whitespace/newlines
+    uri = ''.join(uri.split())
+    return uri
+
+
 class MongoPipeline:
     BATCH_SIZE = 50
     BATCH_TIMEOUT = 10
-    CONNECTION_TIMEOUT_MS = 5000
+    CONNECTION_TIMEOUT_MS = 8000
 
     TTL_VISITS = 90 * 24 * 3600
     TTL_ADS = 180 * 24 * 3600
@@ -45,12 +59,18 @@ class MongoPipeline:
 
     @classmethod
     def from_crawler(cls, crawler):
-        uri = crawler.settings.get('MONGODB_URI') or os.environ.get('MONGODB_URI', '')
-        if not uri or not uri.strip():
-            logger.warning("⚠️ MONGODB_URI empty — pipeline disabled")
-            raise NotConfigured("MONGODB_URI empty")
+        raw_uri = crawler.settings.get('MONGODB_URI') or os.environ.get('MONGODB_URI', '')
+        uri = _sanitize_mongo_uri(raw_uri)
+
+        if not uri or not uri.startswith(('mongodb://', 'mongodb+srv://')):
+            logger.warning("MONGODB_URI invalid or empty - pipeline disabled")
+            if uri:
+                logger.warning(f"   Received length: {len(uri)} | first 30: {uri[:30]}")
+            raise NotConfigured("MONGODB_URI invalid")
+
+        logger.info(f"MONGODB_URI OK (length: {len(uri)})")
         db_name = crawler.settings.get('MONGODB_DATABASE', 'traffic_bot')
-        p = cls(uri.strip(), db_name)
+        p = cls(uri, db_name)
         crawler.signals.connect(p.spider_opened, signal=signals.spider_opened)
         crawler.signals.connect(p.spider_closed, signal=signals.spider_closed)
         return p
@@ -62,20 +82,25 @@ class MongoPipeline:
             self.client = MongoClient(
                 self.mongo_uri,
                 serverSelectionTimeoutMS=self.CONNECTION_TIMEOUT_MS,
-                maxPoolSize=50, retryWrites=True, w=1,
+                maxPoolSize=50,
+                retryWrites=True,
+                w=1,
+                connectTimeoutMS=10000,
+                socketTimeoutMS=30000,
             )
             self.client.admin.command('ping')
             self.db = self.client[self.database]
             self._ensure_indexes()
-            logger.info(f"🗄️ MongoDB: {self.database} | Session: {self._session_id}")
+            logger.info(f"MongoDB connected: {self.database} | Session: {self._session_id}")
         except Exception as e:
-            logger.error(f"❌ MongoDB init failed: {e}")
+            logger.error(f"MongoDB init failed: {e}")
             raise
 
     def _ensure_indexes(self):
         try:
             self.db.visits.create_index('timestamp', expireAfterSeconds=self.TTL_VISITS)
             self.db.visits.create_index('session_id')
+            self.db.visits.create_index([('url', 1), ('timestamp', -1)])
             self.db.ad_clicks.create_index('timestamp', expireAfterSeconds=self.TTL_ADS)
             self.db.form_submits.create_index('timestamp', expireAfterSeconds=self.TTL_FORMS)
             self.db.errors.create_index('timestamp', expireAfterSeconds=self.TTL_ERRORS)
@@ -85,9 +110,9 @@ class MongoPipeline:
             self.db.stats_hourly.create_index('timestamp', expireAfterSeconds=self.TTL_HOURLY)
             self.db.stats_daily.create_index('date', unique=True)
             self.db.stats_daily.create_index('timestamp', expireAfterSeconds=self.TTL_DAILY)
-            logger.info("✅ Indexes created")
+            logger.info("Indexes created")
         except Exception as e:
-            logger.warning(f"⚠️ Index warning: {e}")
+            logger.warning(f"Index warning: {e}")
 
     def process_item(self, item, spider):
         adapter = ItemAdapter(item)
@@ -237,6 +262,7 @@ class MongoPipeline:
                 }},
                 upsert=True,
             )
+            logger.info(f"Session saved: {self._session_id}")
         except Exception as e:
             logger.error(f"Session save failed: {e}")
 
@@ -247,15 +273,16 @@ class MongoPipeline:
                 pass
 
         logger.info(
-            "\n════════════════════════════════════════════════════════\n"
-            "📊 PIPELINE REPORT\n"
-            "════════════════════════════════════════════════════════\n"
+            "\n"
+            "============================================================\n"
+            "PIPELINE REPORT\n"
+            "============================================================\n"
             f"   Session:     {self._session_id}\n"
             f"   Visits:      {self._session_stats['visits']}\n"
             f"   Ads:         {self._session_stats['ads_clicked']}\n"
             f"   Forms:       {self._session_stats['forms_filled']}\n"
             f"   Errors:      {self._session_stats['errors']}\n"
-            "════════════════════════════════════════════════════════"
+            "============================================================"
         )
 
 
@@ -266,16 +293,17 @@ class StatsAggregationPipeline:
 
     @classmethod
     def from_crawler(cls, crawler):
-        uri = crawler.settings.get('MONGODB_URI') or os.environ.get('MONGODB_URI', '')
-        if not uri:
-            raise NotConfigured("MONGODB_URI empty")
-        p = cls(uri.strip(), crawler.settings.get('MONGODB_DATABASE', 'traffic_bot'))
+        raw_uri = crawler.settings.get('MONGODB_URI') or os.environ.get('MONGODB_URI', '')
+        uri = _sanitize_mongo_uri(raw_uri)
+        if not uri or not uri.startswith(('mongodb://', 'mongodb+srv://')):
+            raise NotConfigured("MONGODB_URI invalid")
+        p = cls(uri, crawler.settings.get('MONGODB_DATABASE', 'traffic_bot'))
         crawler.signals.connect(p.spider_closed, signal=signals.spider_closed)
         return p
 
     def spider_closed(self, spider, reason='finished'):
         try:
-            client = MongoClient(self.mongo_uri, serverSelectionTimeoutMS=5000)
+            client = MongoClient(self.mongo_uri, serverSelectionTimeoutMS=8000)
             db = client[self.database]
             self._aggregate(db)
             client.close()
@@ -339,4 +367,4 @@ class StatsAggregationPipeline:
                 upsert=True,
             )
 
-        logger.info("✅ Stats aggregation complete")
+        logger.info("Stats aggregation complete")
