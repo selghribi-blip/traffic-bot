@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   # ============================================================
-  # 1) SCRAPY SPIDER
+  # 1) SCRAPY SPIDER - 10 parallel sessions
   # ============================================================
   run-scrapy-spider:
     name: Scrapy #${{ matrix.attempt }}
@@ -34,7 +34,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
       fail-fast: false
       max-parallel: 5
     steps:
@@ -50,14 +50,6 @@ jobs:
           pip install --upgrade pip
           pip install --no-cache-dir 'Twisted==25.5.0' 'w3lib==2.3.1' 'PySocks>=1.7.1'
           pip install --no-cache-dir -r requirements.txt
-
-      - name: Debug env
-        env:
-          TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
-        run: |
-          echo "TARGET_URL: $TARGET_URL"
-          echo "MONGODB set: ${{ secrets.MONGODB_URI != '' }}"
-          wc -l manual_proxies.txt || true
 
       - name: Run Scrapy
         env:
@@ -82,7 +74,7 @@ jobs:
           retention-days: 3
 
   # ============================================================
-  # 2) LOCAL CHROME
+  # 2) LOCAL CHROME - 40 parallel sessions
   # ============================================================
   run-local-browser-spider:
     name: Local #${{ matrix.attempt }}
@@ -91,12 +83,12 @@ jobs:
       github.event.inputs.run_mode == 'both' ||
       github.event.inputs.run_mode == 'local'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       matrix:
-        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
+        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]
       fail-fast: false
-      max-parallel: 7
+      max-parallel: 8
     steps:
       - uses: actions/checkout@v4
 
@@ -149,7 +141,7 @@ jobs:
           retention-days: 3
 
   # ============================================================
-  # 3) BROWSERSTACK
+  # 3) BROWSERSTACK - manual only
   # ============================================================
   run-browserstack-spider:
     name: BrowserStack
@@ -235,9 +227,30 @@ jobs:
           PYEOF
           )
           echo "TOTAL ITEMS: $total"
-          if [ "$total" -eq 0 ]; then
-            echo "::warning::No items produced"
-          fi
+
+          local_count=$(python3 -c "
+          import json, glob
+          t = 0
+          for f in glob.glob('artifacts/local-results-*/*.json'):
+              try:
+                  with open(f) as fh:
+                      t += len(json.load(fh))
+              except: pass
+          print(t)
+          ")
+          echo "Local visits: $local_count"
+
+          scrapy_count=$(python3 -c "
+          import json, glob
+          t = 0
+          for f in glob.glob('artifacts/scrapy-results-*/*.json'):
+              try:
+                  with open(f) as fh:
+                      t += len(json.load(fh))
+              except: pass
+          print(t)
+          ")
+          echo "Scrapy items: $scrapy_count"
 
   # ============================================================
   # 5) CLEANUP
@@ -252,4 +265,4 @@ jobs:
           token: ${{ github.token }}
           repository: ${{ github.repository }}
           retain_days: 3
-          keep_minimum_runs: 20
+          keep_minimum_runs: 30
