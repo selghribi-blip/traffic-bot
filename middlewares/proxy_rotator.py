@@ -252,7 +252,7 @@ class FreeProxyRotatorMiddleware:
             if self.socks_fail_count >= self.SOCKS_FAILS_BEFORE_HTTP:
                 if self.pools['http']:
                     return 'http'
-            for name in ('socks5', 'http'):
+            for name in ('socks5', 'socks4', 'http'):
                 if self.pools[name]:
                     return name
         return None
