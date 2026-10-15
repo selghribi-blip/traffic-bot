@@ -40,7 +40,7 @@ class BrowserStackSpider(scrapy.Spider):
     INTERNAL_LINKS_MAX = 3
     SCROLL_MIN = 5
     SCROLL_MAX = 10
-    ADS_WAIT = 6  # انتظار تحميل Adsterra/Monetag
+    ADS_WAIT = 12  # انتظار تحميل Adsterra/Monetag
 
     def __init__(self, target_url=None, use_browserstack='true', *args, **kwargs):
         super().__init__(*args, **kwargs)
