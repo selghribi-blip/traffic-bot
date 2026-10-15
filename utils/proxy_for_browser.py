@@ -7,12 +7,15 @@ logger = logging.getLogger(__name__)
 
 
 class BrowserProxyProvider:
-    """يقرأ من manual_proxies.txt ويختار بروكسي Webshare المضمون للمتصفح."""
+    """
+    يقرأ من manual_proxies.txt ويعطي الأولوية القصوى للبروكسي السكني (HTTP).
+    """
 
     def __init__(self, path='manual_proxies.txt'):
         self.path = path
         self.all_proxies = []
-        self.webshare_proxies = []
+        self.residential_proxies = []
+        self.webshare_proxies = []  # أبقيتها كاحتياطي
         self._load()
 
     def _load(self):
@@ -25,41 +28,47 @@ class BrowserProxyProvider:
                 line = line.strip()
                 if not line or line.startswith('#'):
                     continue
+
                 self.all_proxies.append(line)
 
-                # Webshare detection: format is ip:port:user:pass (4 parts)
+                # 1. تحديد البروكسي السكني (الذي يحتوي على بروتوكول http و @)
+                if line.startswith('http://') and '@' in line:
+                    self.residential_proxies.append(line)
+                    continue
+
+                # 2. تحديد بروكسي Webshare (ip:port:user:pass)
                 parts = line.split(':')
                 if len(parts) == 4 and '@' not in line and '://' not in line:
                     self.webshare_proxies.append(line)
 
         logger.info(
             f"BrowserProxyProvider: {len(self.all_proxies)} total, "
+            f"{len(self.residential_proxies)} Residential, "
             f"{len(self.webshare_proxies)} Webshare"
         )
 
     def pick(self):
         """
-        يختار بروكسي للمتصفح:
-        1) Webshare أولًا (موثوق)
-        2) SOCKS5 ثانيًا (إن لم يوجد Webshare)
-        3) None (اتصال مباشر)
+        يختار بروكسي للمتصفح بالأولوية:
+        1) البروكسي السكني (الأفضل لـ Adsterra/Monetag)
+        2) بروكسي Webshare (احتياطي)
+        3) اتصال مباشر (إذا لم يوجد أي شيء)
         """
-        # 1) Webshare (ip:port:user:pass) - موثوق جدًا
+        # 1) الأولوية القصوى: البروكسي السكني
+        if self.residential_proxies:
+            chosen = random.choice(self.residential_proxies)
+            logger.info(f"✅ Using Residential proxy: {chosen.split('@')[-1]}")
+            return chosen  # الصيغة جاهزة للاستخدام
+
+        # 2) الاحتياطي: بروكسي Webshare
         if self.webshare_proxies:
             chosen = random.choice(self.webshare_proxies)
             formatted = self._format_webshare(chosen)
-            logger.info(f"Using Webshare proxy: {chosen.split(':')[0]}")
+            logger.info(f"⚠️ Using Webshare proxy (fallback): {chosen.split(':')[0]}")
             return formatted
 
-        # 2) SOCKS5 من الملف
-        socks5 = [p for p in self.all_proxies if p.startswith('socks5')]
-        if socks5:
-            chosen = random.choice(socks5)
-            logger.info(f"Using SOCKS5 proxy: {chosen}")
-            return chosen
-
         # 3) لا شيء
-        logger.warning("No proxy available - direct connection")
+        logger.warning("⚠️ No proxy available - direct connection")
         return None
 
     @staticmethod
