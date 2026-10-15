@@ -1,4 +1,4 @@
-# utils/# utils/proxy_for_browser.py
+# utils/proxy_for_browser.py
 import os
 import random
 import logging
@@ -7,96 +7,66 @@ logger = logging.getLogger(__name__)
 
 
 class BrowserProxyProvider:
-    """يقرأ البروكسيات من manual_proxies.txt ويختار مناسبًا للمتصفح."""
+    """يقرأ من manual_proxies.txt ويختار بروكسي Webshare المضمون للمتصفح."""
 
     def __init__(self, path='manual_proxies.txt'):
         self.path = path
-        self.proxies = []
+        self.all_proxies = []
+        self.webshare_proxies = []
         self._load()
 
     def _load(self):
         if not os.path.isfile(self.path):
+            logger.warning(f"Proxy file not found: {self.path}")
             return
-        try:
-            with open(self.path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        self.proxies.append(line)
-            logger.info(f"📁 BrowserProxyProvider: {len(self.proxies)} loaded")
-        except Exception as e:
-            logger.warning(f"Failed to load proxies: {e}")
+
+        with open(self.path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                self.all_proxies.append(line)
+
+                # Webshare detection: format is ip:port:user:pass (4 parts)
+                parts = line.split(':')
+                if len(parts) == 4 and '@' not in line and '://' not in line:
+                    self.webshare_proxies.append(line)
+
+        logger.info(
+            f"BrowserProxyProvider: {len(self.all_proxies)} total, "
+            f"{len(self.webshare_proxies)} Webshare"
+        )
 
     def pick(self):
-        """يعيد بروكسي مناسب (SOCKS5 مفضل، ثم HTTP)."""
-        if not self.proxies:
-            return None
+        """
+        يختار بروكسي للمتصفح:
+        1) Webshare أولًا (موثوق)
+        2) SOCKS5 ثانيًا (إن لم يوجد Webshare)
+        3) None (اتصال مباشر)
+        """
+        # 1) Webshare (ip:port:user:pass) - موثوق جدًا
+        if self.webshare_proxies:
+            chosen = random.choice(self.webshare_proxies)
+            formatted = self._format_webshare(chosen)
+            logger.info(f"Using Webshare proxy: {chosen.split(':')[0]}")
+            return formatted
 
-        # فضّل SOCKS5
-        socks5 = [p for p in self.proxies if p.startswith('socks5')]
+        # 2) SOCKS5 من الملف
+        socks5 = [p for p in self.all_proxies if p.startswith('socks5')]
         if socks5:
-            return random.choice(socks5)
+            chosen = random.choice(socks5)
+            logger.info(f"Using SOCKS5 proxy: {chosen}")
+            return chosen
 
-        # ثم HTTP
-        http = [p for p in self.proxies if not p.startswith('socks4')]
-        if http:
-            return random.choice(http)
-
-        return None.py
-"""
-جسر بين ProxyRotator و BrowserStack/Local.
-يستخرج بروكسيًا صالحًا من قائمة مشتركة.
-"""
-import os
-import random
-import requests
-
-
-class BrowserProxyProvider:
-    """يجلب بروكسيًا صالحًا لاستخدامه في BrowserStack أو Local Chrome."""
-
-    DEFAULT_SOURCES = [
-        'https://raw.githubusercontent.com/dinoz0rg/proxy-list/main/checked_proxies/http.txt',
-        'https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/http/data.txt',
-        'https://raw.githubusercontent.com/xyzs996/free-proxy-health-list/main/proxies/protocols/http/data.txt',
-    ]
-
-    def __init__(self, sources=None):
-        self.sources = sources or self.DEFAULT_SOURCES
-        self.proxies = []
-
-    def load(self):
-        seen = set()
-        for url in self.sources:
-            try:
-                r = requests.get(url, timeout=15)
-                for line in r.text.splitlines():
-                    line = line.strip()
-                    if line and not line.startswith('#') and ':' in line:
-                        seen.add(line)
-            except Exception:
-                continue
-        self.proxies = list(seen)
-        return self.proxies
-
-    def pick(self):
-        if not self.proxies:
-            self.load()
-        if not self.proxies:
-            return None
-        raw = random.choice(self.proxies)
-        return self._format(raw)
+        # 3) لا شيء
+        logger.warning("No proxy available - direct connection")
+        return None
 
     @staticmethod
-    def _format(raw: str) -> str:
-        if '://' in raw:
-            return raw
+    def _format_webshare(raw):
+        """ip:port:user:pass -> http://user:pass@ip:port"""
         parts = raw.split(':')
-        if len(parts) == 2:
-            return f"http://{parts[0]}:{parts[1]}"
         if len(parts) == 4:
             ip, port, user, pwd = parts
             return f"http://{user}:{pwd}@{ip}:{port}"
-        if '@' in raw:
-            return f"http://{raw}"
-        return f"http://{raw}"
+        return raw
