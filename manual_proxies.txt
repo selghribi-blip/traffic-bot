@@ -1,7 +1,7 @@
 # manual_proxies.txt
 # =============================================================
 # Mobile Proxy (أضف بروكسي 4G/5G هنا)
-http://user:pass@mobile-proxy-host:port
+# http://user:pass@mobile-proxy-host:port
 # ============================================================
 # SECTION 1: RESIDENTIAL PROXIES (Priority for Adsterra)
 # These are REAL residential IPs - Ads WILL show
