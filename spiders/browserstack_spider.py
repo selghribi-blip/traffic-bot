@@ -1,5 +1,5 @@
 # spiders/browserstack_spider.py
-# Advanced Adsterra + Monetag with REAL mouse clicks + CDP clicks
+# Slow Click Mode - Human-like behavior with proper timing
 import os
 import random
 import time
@@ -21,7 +21,6 @@ class BrowserStackSpider(scrapy.Spider):
         'DOWNLOAD_TIMEOUT': 90,
     }
 
-    # NOTE: Firefox removed - does not support CDP anymore
     BROWSERSTACK_BROWSERS = [
         ('chrome', 'Windows', '11'),
         ('chrome', 'Windows', '10'),
@@ -30,19 +29,39 @@ class BrowserStackSpider(scrapy.Spider):
     ]
 
     # ============================================================
-    # Aggressive settings
+    # SLOW CLICK MODE - Human-like behavior
     # ============================================================
     USE_MOBILE = True
-    AD_CLICK_PROBABILITY = 1.0
-    MAX_AD_CLICKS_PER_SESSION = 5
-    DWELL_TIME_MIN = 90
-    DWELL_TIME_MAX = 150
-    INTERNAL_LINKS_MIN = 2
-    INTERNAL_LINKS_MAX = 4
-    SCROLL_MIN = 8
-    SCROLL_MAX = 15
+
+    # Reading phase (before any click)
+    READ_TIME_MIN = 30              # ثواني قراءة
+    READ_TIME_MAX = 60
+
+    # Click behavior (VERY conservative)
+    MAX_AD_CLICKS_PER_SESSION = 2   # ← فقط 2 نقرات
+    CLICK_PROBABILITY = 0.6         # ← 60% فقط (ليس 100%)
+    TIME_BEFORE_FIRST_CLICK_MIN = 45   # ← 45-90 ثانية قبل أول نقرة
+    TIME_BEFORE_FIRST_CLICK_MAX = 90
+    TIME_BETWEEN_CLICKS_MIN = 10    # ← 10-20 ثانية بين النقرات
+    TIME_BETWEEN_CLICKS_MAX = 20
+    TIME_AFTER_CLICK_MIN = 15       # ← 15-30 ثانية بعد النقرة
+    TIME_AFTER_CLICK_MAX = 30
+
+    # Dwell (total time on page)
+    DWELL_TIME_MIN = 180            # ← 3 دقائق
+    DWELL_TIME_MAX = 300            # ← 5 دقائق
+
+    # Scrolling (slow and natural)
+    SCROLL_MIN = 4                  # ← مرات أقل
+    SCROLL_MAX = 8
+    SCROLL_DELAY_MIN = 3.0          # ← تأخير طويل بين التمريرات
+    SCROLL_DELAY_MAX = 7.0
+
+    # Internal links (fewer, more meaningful)
+    INTERNAL_LINKS_MIN = 1
+    INTERNAL_LINKS_MAX = 2
+
     ADS_WAIT_MAX = 40
-    CLICK_DURING_DWELL_INTERVAL = 6
 
     def __init__(self, target_url=None, use_browserstack='true', *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -58,15 +77,18 @@ class BrowserStackSpider(scrapy.Spider):
         self.captcha_detected = False
         self.ads_detected_in_dom = False
         self.click_attempts = 0
+        self.reading_time = 0
         self._proxy_provider = None
 
     def start_requests(self):
         if not self.target_url.startswith(('http://', 'https://')):
             self.target_url = 'https://' + self.target_url
 
-        self.logger.info(f"Starting browser bot for: {self.target_url}")
+        self.logger.info(f"Starting SLOW CLICK bot for: {self.target_url}")
         self.logger.info(f"   Mode: {'BrowserStack' if self.use_browserstack else 'Local'}")
-        self.logger.info(f"   Mobile emulation: {self.USE_MOBILE}")
+        self.logger.info(f"   Mobile: {self.USE_MOBILE}")
+        self.logger.info(f"   Max clicks: {self.MAX_AD_CLICKS_PER_SESSION}")
+        self.logger.info(f"   Dwell: {self.DWELL_TIME_MIN}-{self.DWELL_TIME_MAX}s")
 
         if self.use_browserstack:
             user = os.environ.get('BROWSERSTACK_USERNAME', '').strip()
@@ -105,26 +127,64 @@ class BrowserStackSpider(scrapy.Spider):
                 self.captcha_detected = True
                 raise RuntimeError("Google CAPTCHA detected")
 
-            # 1) Initial scroll
-            self._random_scroll()
+            # ============================================================
+            # PHASE 1: Initial page load & settle
+            # ============================================================
+            self.logger.info("[PHASE 1] Page loaded - settling...")
+            time.sleep(random.uniform(3, 6))
 
-            # 2) Poll for ads
+            # ============================================================
+            # PHASE 2: Human-like reading (no clicks)
+            # ============================================================
+            self._human_reading_phase()
+
+            # ============================================================
+            # PHASE 3: Wait for ads
+            # ============================================================
             self.ads_detected_in_dom = self._wait_for_ads()
 
-            # 3) Trigger Monetag
-            self._trigger_monetag()
+            # ============================================================
+            # PHASE 4: Trigger Monetag once
+            # ============================================================
+            if self.ads_detected_in_dom:
+                self._trigger_monetag_once()
+                time.sleep(random.uniform(2, 4))
 
-            # 4) Aggressive ad clicking
-            self._click_ads_aggressive()
+            # ============================================================
+            # PHASE 5: Wait before first click (critical!)
+            # ============================================================
+            wait_time = random.uniform(
+                self.TIME_BEFORE_FIRST_CLICK_MIN,
+                self.TIME_BEFORE_FIRST_CLICK_MAX,
+            )
+            self.logger.info(f"[PHASE 5] Waiting {wait_time:.0f}s before first click attempt")
+            time.sleep(wait_time)
 
-            # 5) Fill forms
+            # ============================================================
+            # PHASE 6: Slow click (only 60% chance)
+            # ============================================================
+            if random.random() < self.CLICK_PROBABILITY:
+                self.logger.info("[PHASE 6] Starting slow click sequence")
+                self._slow_click_sequence()
+            else:
+                self.logger.info("[PHASE 6] Skipped clicking (probability)")
+
+            # ============================================================
+            # PHASE 7: Fill forms (if any)
+            # ============================================================
             self.forms_filled = self.client.fill_form()
+            if self.forms_filled > 0:
+                time.sleep(random.uniform(5, 10))
 
-            # 6) Internal links
-            self._click_internal_links()
+            # ============================================================
+            # PHASE 8: Maybe visit one internal link
+            # ============================================================
+            self._maybe_visit_internal_link()
 
-            # 7) Dwell (with periodic clicks)
-            self._dwell()
+            # ============================================================
+            # PHASE 9: Final dwell
+            # ============================================================
+            self._final_dwell()
 
             try:
                 fname = f"bs_{int(datetime.now(timezone.utc).timestamp())}.png"
@@ -134,9 +194,9 @@ class BrowserStackSpider(scrapy.Spider):
 
             status = 'success'
             self.logger.info(
-                f"Visit successful | ads={self.ads_clicked} "
-                f"attempts={self.click_attempts} detected={self.ads_detected_in_dom} "
-                f"mobile={getattr(self.client, 'is_mobile', False)} dwell={self.dwell_time}s"
+                f"SLOW CLICK COMPLETE | ads={self.ads_clicked} "
+                f"attempts={self.click_attempts} read={self.reading_time}s "
+                f"dwell={self.dwell_time}s mobile={getattr(self.client, 'is_mobile', False)}"
             )
 
         except Exception as e:
@@ -160,6 +220,7 @@ class BrowserStackSpider(scrapy.Spider):
             'click_attempts': self.click_attempts,
             'ads_detected': self.ads_detected_in_dom,
             'forms_filled': self.forms_filled,
+            'reading_time': self.reading_time,
             'dwell_time': self.dwell_time,
             'scroll_count': self.scroll_count,
             'internal_clicks': self.internal_clicks,
@@ -171,61 +232,288 @@ class BrowserStackSpider(scrapy.Spider):
         }
 
     # ============================================================
-    # Human-like mouse movement
+    # PHASE 2: Human Reading Phase (no clicks)
     # ============================================================
-    def _human_mouse_move(self, target_element):
-        from selenium.webdriver.common.action_chains import ActionChains
-        try:
-            if getattr(self.client, 'is_mobile', False):
-                from selenium.webdriver.common.actions.action_builder import ActionBuilder
-                from selenium.webdriver.common.actions.pointer_input import PointerInput
-                from selenium.webdriver.common.actions import interaction
-                touch = PointerInput(interaction.POINTER_TOUCH, "touch")
-                actions = ActionBuilder(self.client.driver, mouse=touch)
-                actions.pointer_action.move_to(target_element)
-                actions.pointer_action.pointer_down()
-                actions.pointer_action.pause(random.uniform(0.05, 0.15))
-                actions.pointer_action.pointer_up()
-                actions.perform()
-            else:
-                actions = ActionChains(self.client.driver)
-                actions.move_to_element_with_offset(
-                    target_element, random.randint(-10, 10), random.randint(-10, 10)
+    def _human_reading_phase(self):
+        """Simulate a human reading the page BEFORE any interaction."""
+        read_time = random.uniform(self.READ_TIME_MIN, self.READ_TIME_MAX)
+        self.logger.info(f"[READ] Reading page for {read_time:.0f}s...")
+        start = time.time()
+
+        # Slow scroll down like reading
+        while time.time() - start < read_time:
+            try:
+                # Small scroll (like eye movement tracking)
+                pixels = random.randint(150, 400)
+                self.client.driver.execute_script(
+                    f"window.scrollBy({{top: {pixels}, behavior: 'smooth'}});"
                 )
-                actions.pause(random.uniform(0.2, 0.5))
-                actions.move_to_element(target_element)
-                actions.perform()
-            time.sleep(random.uniform(0.1, 0.3))
-        except Exception as e:
-            self.logger.debug(f"Human mouse move failed: {e}")
+                self.scroll_count += 1
+
+                # Long pause (reading)
+                time.sleep(random.uniform(3.0, 7.0))
+
+                # Occasionally scroll back up (re-reading)
+                if random.random() < 0.2:
+                    self.client.driver.execute_script(
+                        f"window.scrollBy({{top: -{random.randint(100, 250)}, behavior: 'smooth'}});"
+                    )
+                    time.sleep(random.uniform(1.5, 3.0))
+            except Exception:
+                pass
+
+        self.reading_time = int(time.time() - start)
+        self.logger.info(f"[READ] Done reading ({self.reading_time}s)")
 
     # ============================================================
-    # CDP-level Real Mouse Click (bypasses isTrusted check)
+    # PHASE 5: Trigger Monetag ONCE
     # ============================================================
-    def _cdp_click_at(self, x, y):
-        """Real browser-level click via CDP. Bypasses event.isTrusted=false."""
+    def _trigger_monetag_once(self):
+        """Trigger Monetag with a single, natural click."""
         try:
-            self.client.driver.execute_cdp_cmd('Input.dispatchMouseEvent', {
-                'type': 'mouseMoved',
-                'x': int(x), 'y': int(y),
-                'button': 'none', 'clickCount': 0,
-            })
-            time.sleep(random.uniform(0.05, 0.15))
-            self.client.driver.execute_cdp_cmd('Input.dispatchMouseEvent', {
-                'type': 'mousePressed',
-                'x': int(x), 'y': int(y),
-                'button': 'left', 'clickCount': 1,
-            })
-            time.sleep(random.uniform(0.05, 0.12))
-            self.client.driver.execute_cdp_cmd('Input.dispatchMouseEvent', {
-                'type': 'mouseReleased',
-                'x': int(x), 'y': int(y),
-                'button': 'left', 'clickCount': 1,
-            })
-            return True
+            self.client.driver.execute_script("""
+                (() => {
+                    const x = window.innerWidth / 2;
+                    const y = window.innerHeight / 2;
+                    const el = document.elementFromPoint(x, y) || document.body;
+                    el.dispatchEvent(new MouseEvent('click', {
+                        bubbles: true, cancelable: true, view: window,
+                        clientX: x, clientY: y, button: 0
+                    }));
+                })();
+            """)
+            self.logger.info("[MONETAG] Triggered once")
         except Exception as e:
-            self.logger.debug(f"CDP click failed: {e}")
-            return False
+            self.logger.debug(f"Monetag trigger failed: {e}")
+
+    # ============================================================
+    # PHASE 6: Slow Click Sequence
+    # ============================================================
+    def _slow_click_sequence(self):
+        """Very slow, human-like clicking - max 2 clicks with long delays."""
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.action_chains import ActionChains
+
+        self.logger.info("Starting SLOW click sequence...")
+
+        clicked = 0
+        tried_containers = set()
+        tried_iframes = set()
+
+        for attempt in range(self.MAX_AD_CLICKS_PER_SESSION):
+            if clicked >= self.MAX_AD_CLICKS_PER_SESSION:
+                break
+
+            self.click_attempts += 1
+            self.logger.info(f"[SLOW] Attempt {attempt + 1}/{self.MAX_AD_CLICKS_PER_SESSION}")
+
+            # === Try container ===
+            try:
+                containers = self.client.driver.find_elements(
+                    By.CSS_SELECTOR, 'div[id^="container-"]'
+                )
+                # Find one we haven't tried
+                target = None
+                for c in containers:
+                    cid = c.get_attribute('id') or str(id(c))
+                    if cid not in tried_containers and c.is_displayed():
+                        target = c
+                        tried_containers.add(cid)
+                        break
+
+                if target:
+                    # Scroll smoothly to element
+                    self.client.driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center', behavior:'smooth'});",
+                        target
+                    )
+                    time.sleep(random.uniform(2.0, 3.5))
+
+                    # Human mouse move
+                    try:
+                        actions = ActionChains(self.client.driver)
+                        actions.move_to_element(target)
+                        actions.pause(random.uniform(0.3, 0.7))
+                        actions.click(target)
+                        actions.perform()
+                        clicked += 1
+                        self.ads_clicked += 1
+                        self.logger.info(f"[SLOW] ✅ Clicked container (total: {clicked})")
+
+                        # Long wait after click
+                        post_wait = random.uniform(
+                            self.TIME_AFTER_CLICK_MIN,
+                            self.TIME_AFTER_CLICK_MAX,
+                        )
+                        self.logger.info(f"[SLOW] Waiting {post_wait:.0f}s after click")
+                        time.sleep(post_wait)
+                        self._close_extra_tabs()
+
+                        # If we got max clicks, stop
+                        if clicked >= self.MAX_AD_CLICKS_PER_SESSION:
+                            break
+
+                        # Wait between clicks
+                        between_wait = random.uniform(
+                            self.TIME_BETWEEN_CLICKS_MIN,
+                            self.TIME_BETWEEN_CLICKS_MAX,
+                        )
+                        self.logger.info(f"[SLOW] Waiting {between_wait:.0f}s between clicks")
+                        time.sleep(between_wait)
+                        continue
+                    except Exception as e:
+                        self.logger.debug(f"ActionChains click failed: {e}")
+            except Exception as e:
+                self.logger.debug(f"Container strategy error: {e}")
+
+            # === Try iframe ===
+            try:
+                iframes = self.client.driver.find_elements(
+                    By.CSS_SELECTOR,
+                    'iframe[src*="highrevenueformat"], '
+                    'iframe[src*="effectivecpmnetwork"], '
+                    'iframe[src*="highperformanceformat"]'
+                )
+                target = None
+                for f in iframes:
+                    fid = f.get_attribute('id') or str(id(f))
+                    if fid not in tried_iframes and f.is_displayed():
+                        target = f
+                        tried_iframes.add(fid)
+                        break
+
+                if target:
+                    self.client.driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center', behavior:'smooth'});",
+                        target
+                    )
+                    time.sleep(random.uniform(2.0, 3.5))
+
+                    try:
+                        actions = ActionChains(self.client.driver)
+                        actions.move_to_element(target)
+                        actions.pause(random.uniform(0.3, 0.7))
+                        actions.click(target)
+                        actions.perform()
+                        clicked += 1
+                        self.ads_clicked += 1
+                        self.logger.info(f"[SLOW] ✅ Clicked iframe (total: {clicked})")
+
+                        post_wait = random.uniform(
+                            self.TIME_AFTER_CLICK_MIN,
+                            self.TIME_AFTER_CLICK_MAX,
+                        )
+                        self.logger.info(f"[SLOW] Waiting {post_wait:.0f}s after click")
+                        time.sleep(post_wait)
+                        self._close_extra_tabs()
+
+                        if clicked >= self.MAX_AD_CLICKS_PER_SESSION:
+                            break
+
+                        between_wait = random.uniform(
+                            self.TIME_BETWEEN_CLICKS_MIN,
+                            self.TIME_BETWEEN_CLICKS_MAX,
+                        )
+                        self.logger.info(f"[SLOW] Waiting {between_wait:.0f}s between clicks")
+                        time.sleep(between_wait)
+                    except Exception as e:
+                        self.logger.debug(f"ActionChains iframe click failed: {e}")
+            except Exception as e:
+                self.logger.debug(f"Iframe strategy error: {e}")
+
+            # If nothing worked this attempt, wait and try again
+            if clicked == 0 and attempt < self.MAX_AD_CLICKS_PER_SESSION - 1:
+                retry_wait = random.uniform(8, 15)
+                self.logger.info(f"[SLOW] No click this attempt - waiting {retry_wait:.0f}s")
+                time.sleep(retry_wait)
+
+        self.logger.info(f"[SLOW] Sequence done: {clicked} clicks | {self.click_attempts} attempts")
+
+    # ============================================================
+    # PHASE 8: Maybe visit internal link (50% chance)
+    # ============================================================
+    def _maybe_visit_internal_link(self):
+        """Visit ONE internal link if the mood strikes (50%)."""
+        from selenium.webdriver.common.by import By
+
+        if random.random() > 0.5:
+            self.logger.info("[LINK] Skipping internal link this session")
+            return
+
+        try:
+            selectors = [
+                'article a:not([href^="#"])',
+                'h2 a',
+                '.post-title a',
+            ]
+            for selector in selectors:
+                links = self.client.driver.find_elements(By.CSS_SELECTOR, selector)
+                if not links:
+                    continue
+
+                link = random.choice(links[:3])
+                href = link.get_attribute('href') or ''
+                if not href or 'forjo.tech' not in href:
+                    continue
+
+                self.logger.info(f"[LINK] Visiting: {href[:60]}")
+                link.click()
+                time.sleep(random.uniform(5, 10))
+
+                # Read on new page briefly
+                for _ in range(random.randint(2, 4)):
+                    self.client.driver.execute_script(
+                        f"window.scrollBy({{top: {random.randint(200, 500)}, behavior: 'smooth'}});"
+                    )
+                    time.sleep(random.uniform(3, 6))
+
+                # Go back
+                self.client.driver.back()
+                time.sleep(random.uniform(3, 5))
+                self.internal_clicks = 1
+                break
+        except Exception as e:
+            self.logger.debug(f"Internal link error: {e}")
+
+    # ============================================================
+    # PHASE 9: Final Dwell
+    # ============================================================
+    def _final_dwell(self):
+        """Final dwell with slow, natural behavior."""
+        try:
+            duration = random.randint(self.DWELL_TIME_MIN, self.DWELL_TIME_MAX)
+            self.logger.info(f"[DWELL] Final dwell for {duration}s...")
+            start = time.time()
+            last_scroll = time.time()
+
+            while time.time() - start < duration:
+                elapsed = time.time() - start
+
+                # Slow scroll every 10-20 seconds
+                if time.time() - last_scroll > random.uniform(10, 20):
+                    try:
+                        pixels = random.randint(200, 500)
+                        self.client.driver.execute_script(
+                            f"window.scrollBy({{top: {pixels}, behavior: 'smooth'}});"
+                        )
+                        # Occasional scroll back up
+                        if random.random() < 0.3:
+                            time.sleep(random.uniform(1, 2))
+                            self.client.driver.execute_script(
+                                f"window.scrollBy({{top: -{random.randint(100, 300)}, behavior: 'smooth'}});"
+                            )
+                        last_scroll = time.time()
+                    except Exception:
+                        pass
+
+                # Small pause
+                time.sleep(random.uniform(2, 5))
+
+            self.dwell_time = int(time.time() - start)
+            self.logger.info(f"[DWELL] Complete ({self.dwell_time}s)")
+        except Exception as e:
+            self.logger.debug(f"Dwell error: {e}")
+            self.dwell_time = 180
 
     # ============================================================
     # WAIT FOR ADS
@@ -239,312 +527,25 @@ class BrowserStackSpider(scrapy.Spider):
             'iframe[src*="highperformanceformat"]',
             'div[id^="container-"]',
             'ins.adsbygoogle',
-            'iframe[src*="doubleclick"]',
-            'iframe[src*="googlesyndication"]',
         ]
-        self.logger.info(f"Polling for ads (up to {self.ADS_WAIT_MAX}s)...")
+        self.logger.info(f"[ADS] Polling for ads (up to {self.ADS_WAIT_MAX}s)...")
         start = time.time()
         while time.time() - start < self.ADS_WAIT_MAX:
             for selector in selectors:
                 try:
                     elements = self.client.driver.find_elements(By.CSS_SELECTOR, selector)
                     if elements:
-                        self.logger.info(f"Ad element found: {selector} ({len(elements)}x)")
+                        self.logger.info(f"[ADS] Found: {selector} ({len(elements)}x)")
                         return True
                 except Exception:
                     continue
-            try:
-                self.client.driver.execute_script(
-                    f"window.scrollBy({{top: {random.randint(200, 500)}, behavior: 'smooth'}});"
-                )
-            except Exception:
-                pass
             time.sleep(2.0)
-        self.logger.warning(f"No ads found after {self.ADS_WAIT_MAX}s polling")
+        self.logger.warning(f"[ADS] No ads found after {self.ADS_WAIT_MAX}s")
         return False
 
     # ============================================================
-    # TRIGGER MONETAG
+    # CLOSE EXTRA TABS
     # ============================================================
-    def _trigger_monetag(self):
-        try:
-            self.client.driver.execute_script("""
-                (() => {
-                    const x = window.innerWidth / 2;
-                    const y = window.innerHeight / 2;
-                    const el = document.elementFromPoint(x, y) || document.body;
-                    ['mousedown', 'mouseup', 'click'].forEach(type => {
-                        el.dispatchEvent(new MouseEvent(type, {
-                            bubbles: true, cancelable: true, view: window,
-                            clientX: x, clientY: y, button: 0
-                        }));
-                    });
-                    try { el.click(); } catch(e) {}
-                })();
-            """)
-            time.sleep(2)
-            self.logger.info("Monetag triggered via center click")
-        except Exception as e:
-            self.logger.debug(f"Monetag trigger failed: {e}")
-
-    # ============================================================
-    # AGGRESSIVE AD CLICKING - IMPROVED with proper attempt counting
-    # ============================================================
-    def _click_ads_aggressive(self):
-        """
-        Multi-layer ad clicking with proper fallbacks.
-        Attempts counted BEFORE each try, so we always see real attempts.
-        """
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.common.action_chains import ActionChains
-
-        max_clicks = self.MAX_AD_CLICKS_PER_SESSION
-        self.logger.info(f"Aggressive clicking: up to {max_clicks} clicks")
-
-        clicked = 0
-        containers = []
-        iframes = []
-
-        # ============================================================
-        # Collect all ad elements upfront
-        # ============================================================
-        try:
-            containers = self.client.driver.find_elements(
-                By.CSS_SELECTOR, 'div[id^="container-"]'
-            )
-            self.logger.info(f"Found {len(containers)} containers")
-        except Exception as e:
-            self.logger.debug(f"Container search failed: {e}")
-
-        try:
-            iframes = self.client.driver.find_elements(
-                By.CSS_SELECTOR,
-                'iframe[src*="highrevenueformat"], '
-                'iframe[src*="effectivecpmnetwork"], '
-                'iframe[src*="highperformanceformat"], '
-                'iframe[src*="profitableratecpmnetwork"]'
-            )
-            self.logger.info(f"Found {len(iframes)} iframes")
-        except Exception as e:
-            self.logger.debug(f"Iframe search failed: {e}")
-
-        # ============================================================
-        # Strategy 1: Real ActionChains click on containers
-        # ============================================================
-        for idx, c in enumerate(containers[:3]):
-            if clicked >= max_clicks:
-                break
-
-            self.click_attempts += 1
-            try:
-                if not c.is_displayed():
-                    self.logger.debug(f"Container {idx} not displayed")
-                    continue
-
-                self.client.driver.execute_script(
-                    "arguments[0].scrollIntoView({block:'center', behavior:'smooth'});", c
-                )
-                time.sleep(random.uniform(0.8, 1.5))
-
-                # Try ActionChains first
-                try:
-                    actions = ActionChains(self.client.driver)
-                    actions.move_to_element(c)
-                    actions.pause(random.uniform(0.2, 0.4))
-                    actions.click(c)
-                    actions.perform()
-                    clicked += 1
-                    self.ads_clicked += 1
-                    self.logger.info(f"[S1] ActionChains click on container-{idx}")
-                    time.sleep(random.uniform(2.0, 4.0))
-                    self._close_extra_tabs()
-                    continue
-                except Exception as e:
-                    self.logger.debug(f"ActionChains failed on container: {e}")
-
-                # Fallback: CDP click on container center
-                try:
-                    rect = self.client.driver.execute_script(
-                        "return arguments[0].getBoundingClientRect();", c
-                    )
-                    cx = rect['left'] + rect['width'] / 2
-                    cy = rect['top'] + rect['height'] / 2
-                    if self._cdp_click_at(cx, cy):
-                        clicked += 1
-                        self.ads_clicked += 1
-                        self.logger.info(f"[S1] CDP click on container-{idx}")
-                        time.sleep(random.uniform(2.0, 4.0))
-                        self._close_extra_tabs()
-                except Exception as e:
-                    self.logger.debug(f"CDP click failed on container: {e}")
-
-            except Exception as e:
-                self.logger.debug(f"Container {idx} error: {e}")
-
-        # ============================================================
-        # Strategy 2: Real click on iframes
-        # ============================================================
-        for idx, f in enumerate(iframes[:3]):
-            if clicked >= max_clicks:
-                break
-
-            self.click_attempts += 1
-            try:
-                if not f.is_displayed():
-                    continue
-
-                self.client.driver.execute_script(
-                    "arguments[0].scrollIntoView({block:'center'});", f
-                )
-                time.sleep(random.uniform(0.6, 1.2))
-
-                # Try ActionChains
-                try:
-                    actions = ActionChains(self.client.driver)
-                    actions.move_to_element(f)
-                    actions.pause(random.uniform(0.2, 0.4))
-                    actions.click(f)
-                    actions.perform()
-                    clicked += 1
-                    self.ads_clicked += 1
-                    self.logger.info(f"[S2] ActionChains click on iframe-{idx}")
-                    time.sleep(random.uniform(2.0, 4.0))
-                    self._close_extra_tabs()
-                    continue
-                except Exception as e:
-                    self.logger.debug(f"ActionChains failed on iframe: {e}")
-
-                # Fallback: CDP click
-                try:
-                    rect = self.client.driver.execute_script(
-                        "return arguments[0].getBoundingClientRect();", f
-                    )
-                    cx = rect['left'] + rect['width'] / 2
-                    cy = rect['top'] + rect['height'] / 2
-                    if self._cdp_click_at(cx, cy):
-                        clicked += 1
-                        self.ads_clicked += 1
-                        self.logger.info(f"[S2] CDP click on iframe-{idx}")
-                        time.sleep(random.uniform(2.0, 4.0))
-                        self._close_extra_tabs()
-                except Exception as e:
-                    self.logger.debug(f"CDP click failed on iframe: {e}")
-
-            except Exception as e:
-                self.logger.debug(f"Iframe {idx} error: {e}")
-
-        # ============================================================
-        # Strategy 3: CDP click on any ad-like element (loop)
-        # ============================================================
-        safety_counter = 0
-        while clicked < max_clicks and safety_counter < 10:
-            safety_counter += 1
-            self.click_attempts += 1
-            try:
-                pos = self.client.driver.execute_script("""
-                    (() => {
-                        const sels = [
-                            'ins.adsbygoogle',
-                            'div[id^="container-"]',
-                            'iframe[src*="highrevenueformat"]',
-                            'iframe[src*="effectivecpmnetwork"]',
-                            'iframe[src*="highperformanceformat"]',
-                        ];
-                        const all = [];
-                        for (const sel of sels) {
-                            document.querySelectorAll(sel).forEach(el => {
-                                const rect = el.getBoundingClientRect();
-                                if (rect.width >= 50 && rect.height >= 30 &&
-                                    rect.top >= 0 && rect.top <= window.innerHeight) {
-                                    all.push({
-                                        x: rect.left + rect.width / 2,
-                                        y: rect.top + rect.height / 2,
-                                        tag: el.tagName
-                                    });
-                                }
-                            });
-                        }
-                        if (all.length === 0) return null;
-                        return all[Math.floor(Math.random() * all.length)];
-                    })();
-                """)
-
-                if not pos:
-                    self.logger.debug("No visible ad element for CDP")
-                    break
-
-                if self._cdp_click_at(pos['x'], pos['y']):
-                    clicked += 1
-                    self.ads_clicked += 1
-                    self.logger.info(
-                        f"[S3] CDP click at ({int(pos['x'])}, {int(pos['y'])}) on {pos['tag']}"
-                    )
-                    time.sleep(random.uniform(2.0, 4.0))
-                    self._close_extra_tabs()
-                else:
-                    time.sleep(1.0)
-
-            except Exception as e:
-                self.logger.debug(f"CDP strategy error: {e}")
-                break
-
-        # ============================================================
-        # Strategy 4: JS mass click (fallback)
-        # ============================================================
-        if clicked < max_clicks:
-            self.click_attempts += 1
-            try:
-                js_mass = """
-                (() => {
-                    const containers = document.querySelectorAll(
-                        'div[id^="container-"], ins.adsbygoogle'
-                    );
-                    let total = 0;
-                    containers.forEach(c => {
-                        const rect = c.getBoundingClientRect();
-                        if (rect.width < 50 || rect.height < 30) return;
-                        c.scrollIntoView({block: 'center'});
-                        const x = rect.left + rect.width / 2;
-                        const y = rect.top + rect.height / 2;
-                        const targets = [
-                            document.elementFromPoint(x, y),
-                            c.querySelector('iframe'),
-                            c.querySelector('a'),
-                            c.firstElementChild,
-                            c,
-                        ].filter(t => t);
-                        targets.forEach(t => {
-                            ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(evt => {
-                                t.dispatchEvent(new PointerEvent(evt, {
-                                    bubbles: true, cancelable: true, view: window,
-                                    clientX: x, clientY: y, button: 0,
-                                    pointerType: 'touch', isPrimary: true
-                                }));
-                                t.dispatchEvent(new MouseEvent(evt, {
-                                    bubbles: true, cancelable: true, view: window,
-                                    clientX: x, clientY: y, button: 0
-                                }));
-                            });
-                            try { t.click(); total++; } catch(e) {}
-                        });
-                    });
-                    return total;
-                })();
-                """
-                result = self.client.driver.execute_script(js_mass)
-                if result and result > 0:
-                    clicked += 1
-                    self.ads_clicked += 1
-                    self.logger.info(f"[S4] JS mass click: {result} elements")
-                    time.sleep(random.uniform(2.0, 4.0))
-                    self._close_extra_tabs()
-            except Exception as e:
-                self.logger.debug(f"JS mass click failed: {e}")
-
-        self.logger.info(
-            f"Total clicks: {clicked} | Attempts: {self.click_attempts}"
-        )
-
     def _close_extra_tabs(self):
         try:
             handles = self.client.driver.window_handles
@@ -553,12 +554,7 @@ class BrowserStackSpider(scrapy.Spider):
                 for handle in handles[1:]:
                     try:
                         self.client.driver.switch_to.window(handle)
-                        time.sleep(random.uniform(1.5, 3.0))
-                        try:
-                            self.client.driver.execute_script("window.scrollBy(0, 400);")
-                            time.sleep(1.0)
-                        except Exception:
-                            pass
+                        time.sleep(random.uniform(2.0, 4.0))
                         self.client.driver.close()
                     except Exception:
                         continue
@@ -566,138 +562,9 @@ class BrowserStackSpider(scrapy.Spider):
                     self.client.driver.switch_to.window(main)
                 except Exception:
                     pass
-                self.logger.info(f"Closed {len(handles) - 1} extra tabs")
+                self.logger.info(f"[TABS] Closed {len(handles) - 1} extra tabs")
         except Exception as e:
             self.logger.debug(f"Tab close error: {e}")
-
-    # ============================================================
-    # SCROLL
-    # ============================================================
-    def _random_scroll(self):
-        try:
-            count = random.randint(self.SCROLL_MIN, self.SCROLL_MAX)
-            for i in range(count):
-                pixels = random.randint(300, 700)
-                self.client.driver.execute_script(
-                    f"window.scrollBy({{top: {pixels}, behavior: 'smooth'}});"
-                )
-                time.sleep(random.uniform(0.7, 1.8))
-                if random.random() < 0.3:
-                    self.client.driver.execute_script(
-                        f"window.scrollBy({{top: -{random.randint(100, 300)}, behavior: 'smooth'}});"
-                    )
-                    time.sleep(random.uniform(0.5, 1.0))
-            self.scroll_count = count
-        except Exception:
-            pass
-
-    # ============================================================
-    # INTERNAL LINKS
-    # ============================================================
-    def _click_internal_links(self):
-        from selenium.webdriver.common.by import By
-        try:
-            count = random.randint(self.INTERNAL_LINKS_MIN, self.INTERNAL_LINKS_MAX)
-            clicked = 0
-            selectors = [
-                'article a:not([href^="#"])',
-                'h2 a',
-                'h3 a',
-                '.post-title a',
-                '.entry-title a',
-                'main a:not([href^="#"])',
-            ]
-            for selector in selectors:
-                if clicked >= count:
-                    break
-                try:
-                    links = self.client.driver.find_elements(By.CSS_SELECTOR, selector)
-                    if not links:
-                        continue
-                    link = random.choice(links[:5])
-                    if not link.is_displayed():
-                        continue
-                    href = link.get_attribute('href') or ''
-                    if not href or href.startswith('#') or 'forjo.tech' not in href:
-                        continue
-
-                    self._human_mouse_move(link)
-                    self.client.driver.execute_script(
-                        "arguments[0].scrollIntoView({block: 'center'});", link
-                    )
-                    time.sleep(random.uniform(0.8, 1.5))
-                    link.click()
-                    time.sleep(random.uniform(4.0, 8.0))
-
-                    self.client.driver.execute_script("window.scrollBy(0, 500);")
-                    time.sleep(random.uniform(2.0, 4.0))
-
-                    # Click ads on new page
-                    self._click_ads_aggressive()
-
-                    clicked += 1
-                    self.internal_clicks += 1
-                    self.client.driver.back()
-                    time.sleep(random.uniform(2.0, 4.0))
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-    # ============================================================
-    # DWELL with periodic real clicks
-    # ============================================================
-    def _dwell(self):
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.common.action_chains import ActionChains
-
-        try:
-            duration = random.randint(self.DWELL_TIME_MIN, self.DWELL_TIME_MAX)
-            self.logger.info(f"Dwelling {duration}s with periodic real clicks...")
-            start = time.time()
-            last_click = 0
-
-            while time.time() - start < duration:
-                time.sleep(random.uniform(3, 7))
-
-                # Scroll
-                try:
-                    self.client.driver.execute_script(
-                        f"window.scrollBy({{top: {random.randint(200, 600)}, behavior: 'smooth'}});"
-                    )
-                except Exception:
-                    pass
-
-                # Periodic real click every CLICK_DURING_DWELL_INTERVAL seconds
-                if time.time() - last_click > self.CLICK_DURING_DWELL_INTERVAL:
-                    try:
-                        containers = self.client.driver.find_elements(
-                            By.CSS_SELECTOR, 'div[id^="container-"]'
-                        )
-                        for c in containers[:2]:
-                            try:
-                                if not c.is_displayed():
-                                    continue
-                                actions = ActionChains(self.client.driver)
-                                actions.move_to_element(c)
-                                actions.pause(random.uniform(0.1, 0.3))
-                                actions.click(c)
-                                actions.perform()
-                                self.ads_clicked += 1
-                                self.logger.info("Dwell real click on container")
-                                time.sleep(random.uniform(1.5, 3.0))
-                                self._close_extra_tabs()
-                                break
-                            except Exception:
-                                continue
-                    except Exception:
-                        pass
-                    last_click = time.time()
-
-            self.dwell_time = int(time.time() - start)
-        except Exception as e:
-            self.logger.debug(f"Dwell error: {e}")
-            self.dwell_time = 90
 
     # ============================================================
     # PROXY
@@ -745,5 +612,6 @@ class BrowserStackSpider(scrapy.Spider):
 
     def closed(self, reason):
         self.logger.info(
-            f"Closed ({reason}) | ads={self.ads_clicked} attempts={self.click_attempts}"
+            f"Closed ({reason}) | ads={self.ads_clicked} "
+            f"attempts={self.click_attempts} read={self.reading_time}s dwell={self.dwell_time}s"
         )
