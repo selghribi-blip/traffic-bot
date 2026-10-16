@@ -1,4 +1,5 @@
 # utils/proxy_for_browser.py
+# Browser proxy provider with mobile proxy priority
 import os
 import random
 import logging
@@ -8,14 +9,18 @@ logger = logging.getLogger(__name__)
 
 class BrowserProxyProvider:
     """
-    يقرأ من manual_proxies.txt ويعطي الأولوية القصوى للبروكسي السكني (HTTP).
+    Reads manual_proxies.txt and prioritizes:
+    1) Mobile proxies (4G/5G) - Best for Adsterra
+    2) Residential proxies - Good for Adsterra
+    3) Datacenter proxies - Fallback
     """
 
     def __init__(self, path='manual_proxies.txt'):
         self.path = path
         self.all_proxies = []
+        self.mobile_proxies = []
         self.residential_proxies = []
-        self.webshare_proxies = []  # أبقيتها كاحتياطي
+        self.datacenter_proxies = []
         self._load()
 
     def _load(self):
@@ -31,51 +36,72 @@ class BrowserProxyProvider:
 
                 self.all_proxies.append(line)
 
-                # 1. تحديد البروكسي السكني (الذي يحتوي على بروتوكول http و @)
+                # 1) Mobile proxies (4G/5G) - detect by keywords or ports
+                # Mobile proxies usually use ports like 1080, 3129, or contain "mobile" in URL
+                if any(kw in line.lower() for kw in ['mobile', '4g', '5g', 'lte', 'cellular']):
+                    self.mobile_proxies.append(line)
+                    continue
+
+                # 2) Residential proxies (contain @ and http://)
                 if line.startswith('http://') and '@' in line:
                     self.residential_proxies.append(line)
                     continue
 
-                # 2. تحديد بروكسي Webshare (ip:port:user:pass)
-                parts = line.split(':')
-                if len(parts) == 4 and '@' not in line and '://' not in line:
-                    self.webshare_proxies.append(line)
+                # 3) Datacenter proxies (ip:port:user:pass or ip:port)
+                self.datacenter_proxies.append(line)
 
         logger.info(
-            f"BrowserProxyProvider: {len(self.all_proxies)} total, "
-            f"{len(self.residential_proxies)} Residential, "
-            f"{len(self.webshare_proxies)} Webshare"
+            f"BrowserProxyProvider: {len(self.all_proxies)} total | "
+            f"{len(self.mobile_proxies)} Mobile | "
+            f"{len(self.residential_proxies)} Residential | "
+            f"{len(self.datacenter_proxies)} Datacenter"
         )
 
     def pick(self):
         """
-        يختار بروكسي للمتصفح بالأولوية:
-        1) البروكسي السكني (الأفضل لـ Adsterra/Monetag)
-        2) بروكسي Webshare (احتياطي)
-        3) اتصال مباشر (إذا لم يوجد أي شيء)
+        Pick proxy with priority:
+        1) Mobile (4G/5G) - Best for Adsterra
+        2) Residential - Good
+        3) Datacenter - Fallback
         """
-        # 1) الأولوية القصوى: البروكسي السكني
+        # 1) Mobile proxies (best for Adsterra)
+        if self.mobile_proxies:
+            chosen = random.choice(self.mobile_proxies)
+            logger.info(f"Using Mobile proxy: {chosen.split('@')[-1] if '@' in chosen else chosen[:30]}")
+            return self._format(chosen)
+
+        # 2) Residential proxies
         if self.residential_proxies:
             chosen = random.choice(self.residential_proxies)
-            logger.info(f"✅ Using Residential proxy: {chosen.split('@')[-1]}")
-            return chosen  # الصيغة جاهزة للاستخدام
+            logger.info(f"Using Residential proxy: {chosen.split('@')[-1] if '@' in chosen else chosen[:30]}")
+            return self._format(chosen)
 
-        # 2) الاحتياطي: بروكسي Webshare
-        if self.webshare_proxies:
-            chosen = random.choice(self.webshare_proxies)
-            formatted = self._format_webshare(chosen)
-            logger.info(f"⚠️ Using Webshare proxy (fallback): {chosen.split(':')[0]}")
-            return formatted
+        # 3) Datacenter proxies (fallback)
+        if self.datacenter_proxies:
+            chosen = random.choice(self.datacenter_proxies)
+            logger.warning(f"Using Datacenter proxy (fallback): {chosen[:30]}")
+            return self._format(chosen)
 
-        # 3) لا شيء
-        logger.warning("⚠️ No proxy available - direct connection")
+        logger.warning("No proxy available - direct connection")
         return None
 
     @staticmethod
-    def _format_webshare(raw):
-        """ip:port:user:pass -> http://user:pass@ip:port"""
+    def _format(raw):
+        """Format proxy string for Selenium."""
+        raw = raw.strip()
+        if not raw:
+            return None
+        if '://' in raw:
+            return raw
+        if '@' in raw:
+            return f"http://{raw}"
+
         parts = raw.split(':')
+        # ip:port:user:pass -> http://user:pass@ip:port
         if len(parts) == 4:
             ip, port, user, pwd = parts
             return f"http://{user}:{pwd}@{ip}:{port}"
-        return raw
+        # ip:port -> http://ip:port
+        if len(parts) == 2:
+            return f"http://{raw}"
+        return f"http://{raw}"
