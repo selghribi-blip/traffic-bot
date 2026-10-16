@@ -1,728 +1,630 @@
-# spiders/browserstack_spider.py
-# Advanced Adsterra + Monetag with human-like behavior
+# utils/browserstack_client.py
+# BrowserStack + Local Chrome client with anti-detection
 import os
-import random
 import time
-import scrapy
-from datetime import datetime, timezone
+import json
+import random
+import logging
+import tempfile
 
-from utils.browserstack_client import BrowserStackClient, LocalBrowserClient
-from utils.proxy_for_browser import BrowserProxyProvider
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.common.exceptions import (
+    TimeoutException, NoSuchElementException,
+    ElementClickInterceptedException, WebDriverException,
+    StaleElementReferenceException, ElementNotInteractableException,
+)
+
+logger = logging.getLogger(__name__)
 
 
-class BrowserStackSpider(scrapy.Spider):
-    name = 'browserstack_bot'
+# ============================================================
+# Bezier Mouse Movement (human-like curves)
+# ============================================================
+class BezierMouse:
+    @staticmethod
+    def bezier_points(x1, y1, x2, y2, steps=25):
+        cx1 = x1 + (x2 - x1) * random.uniform(0.2, 0.4) + random.randint(-50, 50)
+        cy1 = y1 + (y2 - y1) * random.uniform(0.2, 0.4) + random.randint(-50, 50)
+        cx2 = x1 + (x2 - x1) * random.uniform(0.6, 0.8) + random.randint(-50, 50)
+        cy2 = y1 + (y2 - y1) * random.uniform(0.6, 0.8) + random.randint(-50, 50)
+        points = []
+        for i in range(steps + 1):
+            t = i / steps
+            x = ((1 - t) ** 3 * x1 + 3 * (1 - t) ** 2 * t * cx1 +
+                 3 * (1 - t) * t ** 2 * cx2 + t ** 3 * x2)
+            y = ((1 - t) ** 3 * y1 + 3 * (1 - t) ** 2 * t * cy1 +
+                 3 * (1 - t) * t ** 2 * cy2 + t ** 3 * y2)
+            points.append((int(x), int(y)))
+        return points
 
-    custom_settings = {
-        'DOWNLOAD_DELAY': 3,
-        'RANDOMIZE_DOWNLOAD_DELAY': True,
-        'CONCURRENT_REQUESTS': 1,
-        'RETRY_TIMES': 1,
-        'DOWNLOAD_TIMEOUT': 90,
-    }
 
-    BROWSERSTACK_BROWSERS = [
-        ('chrome', 'Windows', '11'),
-        ('chrome', 'Windows', '10'),
-        ('chrome', 'OS X', 'Ventura'),
-        ('firefox', 'Windows', '11'),
-        ('edge', 'Windows', '11'),
+# ============================================================
+# CDP Fingerprint Spoofing
+# ============================================================
+class CDPSpoofer:
+    @classmethod
+    def apply(cls, driver, fp):
+        try:
+            if fp.get('timezone'):
+                driver.execute_cdp_cmd('Emulation.setTimezoneOverride', {
+                    'timezoneId': fp['timezone'],
+                })
+            if fp.get('locale'):
+                driver.execute_cdp_cmd('Emulation.setLocaleOverride', {
+                    'locale': fp['locale'],
+                })
+            if fp.get('user_agent'):
+                driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+                    'userAgent': fp['user_agent'],
+                    'platform': fp.get('platform', 'Win32'),
+                })
+            if fp.get('viewport'):
+                vw, vh = fp['viewport']
+                driver.execute_cdp_cmd('Emulation.setDeviceMetricsOverride', {
+                    'width': vw, 'height': vh,
+                    'deviceScaleFactor': 1, 'mobile': False,
+                })
+            driver.execute_cdp_cmd(
+                'Page.addScriptToEvaluateOnNewDocument',
+                {'source': cls._script(fp)},
+            )
+        except Exception as e:
+            logger.debug(f"CDP spoofing partial: {e}")
+
+    @staticmethod
+    def _script(fp):
+        wv = fp.get('webgl_vendor', '')
+        wr = fp.get('webgl_renderer', '')
+        hw = fp.get('hardware_concurrency', 8)
+        dm = fp.get('device_memory', 8)
+        langs = fp.get('langs', ['en-US', 'en'])
+        platform = fp.get('platform', 'Win32')
+        vendor = fp.get('vendor', 'Google Inc.')
+
+        return f"""
+        (() => {{
+            Object.defineProperty(navigator, 'webdriver', {{get: () => undefined}});
+            Object.defineProperty(navigator, 'platform', {{get: () => '{platform}'}});
+            Object.defineProperty(navigator, 'vendor', {{get: () => '{vendor}'}});
+            Object.defineProperty(navigator, 'language', {{get: () => '{langs[0]}'}});
+            Object.defineProperty(navigator, 'languages', {{get: () => {json.dumps(langs)}}});
+            Object.defineProperty(navigator, 'hardwareConcurrency', {{get: () => {hw}}});
+            Object.defineProperty(navigator, 'deviceMemory', {{get: () => {dm}}});
+            Object.defineProperty(navigator, 'plugins', {{
+                get: () => [
+                    {{name: 'PDF Viewer'}},
+                    {{name: 'Chrome PDF Viewer'}},
+                    {{name: 'Chromium PDF Viewer'}},
+                ],
+            }});
+            const getParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function(p) {{
+                if (p === 37445) return '{wv}';
+                if (p === 37446) return '{wr}';
+                return getParameter.call(this, p);
+            }};
+            const toDataURL = HTMLCanvasElement.prototype.toDataURL;
+            HTMLCanvasElement.prototype.toDataURL = function() {{
+                const ctx = this.getContext('2d');
+                if (ctx) {{
+                    try {{
+                        const imgData = ctx.getImageData(0, 0, this.width, this.height);
+                        for (let i = 0; i < imgData.data.length; i += 100) {{
+                            imgData.data[i] = imgData.data[i] ^ 1;
+                        }}
+                        ctx.putImageData(imgData, 0, 0);
+                    }} catch(e) {{}}
+                }}
+                return toDataURL.apply(this, arguments);
+            }};
+            window.chrome = {{runtime: {{}}, loadTimes: function() {{}}, csi: function() {{}}}};
+            const origQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (p) => (
+                p.name === 'notifications'
+                    ? Promise.resolve({{state: Notification.permission}})
+                    : origQuery(p)
+            );
+        }})();
+        """
+
+
+# ============================================================
+# Resource Blocker
+# ============================================================
+class ResourceBlocker:
+    BLOCK_ALWAYS = [
+        'google-analytics.com',
+        'googletagmanager.com',
+        'facebook.net',
+        'hotjar.com',
+        'clarity.ms',
     ]
 
-    # ============================================================
-    # Aggressive settings for max clicks
-    # ============================================================
-    AD_CLICK_PROBABILITY = 1.0
-    MAX_AD_CLICKS_PER_SESSION = 5
-    DWELL_TIME_MIN = 90
-    DWELL_TIME_MAX = 150
-    INTERNAL_LINKS_MIN = 2
-    INTERNAL_LINKS_MAX = 4
-    SCROLL_MIN = 8
-    SCROLL_MAX = 15
-    ADS_WAIT_MAX = 40
-
-    def __init__(self, target_url=None, use_browserstack='true', *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.target_url = (target_url or '').strip() or 'https://www.forjo.tech/'
-        self.use_browserstack = str(use_browserstack).lower() == 'true'
-        self.client = None
-        self.ads_clicked = 0
-        self.forms_filled = 0
-        self.proxy_used = None
-        self.dwell_time = 0
-        self.scroll_count = 0
-        self.internal_clicks = 0
-        self.captcha_detected = False
-        self.ads_detected_in_dom = False
-        self.click_attempts = 0
-        self._proxy_provider = None
-
-    def start_requests(self):
-        if not self.target_url.startswith(('http://', 'https://')):
-            self.target_url = 'https://' + self.target_url
-
-        self.logger.info(f"Starting browser bot for: {self.target_url}")
-        self.logger.info(f"   Mode: {'BrowserStack' if self.use_browserstack else 'Local'}")
-
-        if self.use_browserstack:
-            user = os.environ.get('BROWSERSTACK_USERNAME', '').strip()
-            key = os.environ.get('BROWSERSTACK_ACCESS_KEY', '').strip()
-            if not (user and key):
-                self.logger.warning("BrowserStack credentials missing - LOCAL")
-                self.use_browserstack = False
-
-        yield scrapy.Request(
-            url=self.target_url,
-            callback=self.parse_with_browser,
-            errback=self.handle_error,
-            dont_filter=True,
-            meta={'handle_httpstatus_all': True},
-        )
-
-    def parse_with_browser(self, response):
-        status = 'unknown'
-        error_msg = None
-
+    @classmethod
+    def setup(cls, driver, mode='balanced'):
+        if mode == 'off':
+            return
         try:
-            proxy = self._pick_proxy()
-            self.proxy_used = proxy
-
-            if self.use_browserstack:
-                driver = self._start_browserstack(proxy)
-            else:
-                driver = self._start_local(proxy)
-
-            if driver is None:
-                raise RuntimeError("Session creation returned None")
-
-            self.client.wait_for_page_load(timeout=30)
-
-            if self.client.is_captcha_page():
-                self.captcha_detected = True
-                raise RuntimeError("Google CAPTCHA detected")
-
-            # 1) Initial scroll to trigger lazy-loaded ads
-            self._random_scroll()
-
-            # 2) Poll for ad elements (up to 40s)
-            self.ads_detected_in_dom = self._wait_for_ads()
-
-            # 3) Trigger Monetag (any click)
-            self._trigger_monetag()
-
-            # 4) Aggressive ad clicking
-            self._click_ads_aggressive()
-
-            # 5) Fill forms
-            self.forms_filled = self.client.fill_form()
-
-            # 6) Internal links (triggers ad refresh)
-            self._click_internal_links()
-
-            # 7) Dwell
-            self._dwell()
-
-            try:
-                fname = f"bs_{int(datetime.now(timezone.utc).timestamp())}.png"
-                self.client.take_screenshot(fname)
-            except Exception:
-                pass
-
-            status = 'success'
-            self.logger.info(
-                f"Visit successful | ads={self.ads_clicked} "
-                f"attempts={self.click_attempts} detected={self.ads_detected_in_dom} "
-                f"dwell={self.dwell_time}s scrolls={self.scroll_count}"
-            )
-
+            driver.execute_cdp_cmd('Network.enable', {})
+            blocked = [f'*{d}*' for d in cls.BLOCK_ALWAYS]
+            if mode == 'aggressive':
+                blocked += [
+                    '*.jpg*', '*.jpeg*', '*.png*', '*.gif*', '*.webp*',
+                    '*.svg*', '*.ico*', '*.mp4*', '*.webm*', '*.mp3*',
+                    '*.woff*', '*.woff2*', '*.ttf*', '*.otf*', '*.css*',
+                ]
+            driver.execute_cdp_cmd('Network.setBlockedURLs', {'urls': blocked})
+            logger.info(f"Resource blocking: {mode}")
         except Exception as e:
-            status = f'error: {e.__class__.__name__}'
-            error_msg = str(e)[:200]
-            self.logger.error(f"Browser failed: {e}")
+            logger.debug(f"Resource blocking failed: {e}")
 
-        finally:
-            if self.client:
-                try:
-                    self.client.close()
-                except Exception:
-                    pass
 
-        yield {
-            'type': 'browserstack_visit',
-            'url': self.target_url,
-            'status': status,
-            'error': error_msg,
-            'ads_clicked': self.ads_clicked,
-            'click_attempts': self.click_attempts,
-            'ads_detected': self.ads_detected_in_dom,
-            'forms_filled': self.forms_filled,
-            'dwell_time': self.dwell_time,
-            'scroll_count': self.scroll_count,
-            'internal_clicks': self.internal_clicks,
-            'captcha': self.captcha_detected,
-            'mode': 'browserstack' if self.use_browserstack else 'local',
-            'proxy_used': self.proxy_used,
-            'timestamp': datetime.now(timezone.utc).isoformat(),
+# ============================================================
+# BrowserStack Client
+# ============================================================
+class BrowserStackClient:
+    AD_SELECTORS = [
+        'ins.adsbygoogle',
+        'iframe[id*="google_ads"]',
+        'iframe[src*="doubleclick"]',
+        'iframe[src*="googlesyndication"]',
+        '.adsbygoogle',
+        'a[href*="adsterra"]',
+        'a[href*="monetag"]',
+        'a[href*="propellerads"]',
+        'a[href*="effectivecpmnetwork"]',
+        'a[href*="highperformanceformat"]',
+        'a[href*="highrevenueformat"]',
+        'a[href*="profitableratecpmnetwork"]',
+        'a[href*="mgid"]',
+        'a[href*="taboola"]',
+        'a[href*="outbrain"]',
+        'div[id^="ad-"]:not(:empty)',
+        'div[class*="advertisement"]:not(:empty)',
+        'div[data-ad-slot]',
+        'div[data-ad-client]',
+        '.ad-banner',
+        '[class*="banner-ad"]',
+    ]
+
+    FORM_SELECTORS = [
+        'form[action*="contact"]', 'form[action*="subscribe"]',
+        'form[action*="newsletter"]', 'form[id*="contact"]',
+        'form[id*="subscribe"]', 'form[class*="contact"]',
+        'form[class*="subscribe"]', 'form[class*="newsletter"]',
+        '.contact-form', '.subscribe-form', '.newsletter-form',
+        '#contact-form', '#subscribe-form',
+    ]
+
+    CAPTCHA_SIGNALS = [
+        'google.com/sorry',
+        'consent.google.com',
+        'captcha',
+        'unusual traffic',
+        'detected unusual',
+        'our systems have detected',
+        'please show you',
+        '/sorry/index',
+        'are you a robot',
+    ]
+
+    VIEWPORTS = [
+        (1920, 1080), (1366, 768), (1536, 864),
+        (1440, 900), (1600, 900),
+    ]
+    LOCALES = ['en-US', 'en-GB', 'fr-FR', 'de-DE', 'es-ES']
+    TIMEZONES = {
+        'en-US': 'America/New_York',
+        'en-GB': 'Europe/London',
+        'fr-FR': 'Europe/Paris',
+        'de-DE': 'Europe/Berlin',
+        'es-ES': 'Europe/Madrid',
+    }
+
+    def __init__(self, username=None, access_key=None):
+        self.username = username or os.environ.get('BROWSERSTACK_USERNAME', '').strip()
+        self.access_key = access_key or os.environ.get('BROWSERSTACK_ACCESS_KEY', '').strip()
+        self.driver = None
+        self.current_locale = 'en-US'
+
+    # ============================================================
+    # BrowserStack Session
+    # ============================================================
+    def start_session(self, url, browser='chrome', os_name='Windows', os_version='11',
+                      proxy=None, use_local=False, fp=None, record_video=False,
+                      block_resources='balanced'):
+        if not (self.username and self.access_key):
+            raise RuntimeError("BrowserStack credentials missing")
+
+        fp = fp or self._random_fp()
+
+        options = Options()
+        options.set_capability('browserName', browser)
+        options.set_capability('browserVersion', 'latest')
+
+        bstack_opts = {
+            'os': os_name, 'osVersion': os_version, 'local': use_local,
+            'projectName': 'Traffic Bot',
+            'buildName': f'Traffic Bot - {os_name} {os_version}',
+            'sessionName': f'Visit {url[:60]}',
+            'debug': True, 'networkLogs': True, 'consoleLogs': 'info',
+            'userName': self.username, 'accessKey': self.access_key,
         }
+        if proxy:
+            bstack_opts['proxy'] = proxy
+        if record_video:
+            bstack_opts['video'] = True
 
-    # ============================================================
-    # NEW: Human-like mouse movement
-    # ============================================================
-    def _human_mouse_move(self, target_element):
-        """
-        Moves the mouse to an element in a human-like curve using ActionChains.
-        """
-        from selenium.webdriver.common.action_chains import ActionChains
-        try:
-            actions = ActionChains(self.client.driver)
-            # Move to a random point near the element, then to the element
-            actions.move_to_element_with_offset(target_element, random.randint(-10, 10), random.randint(-10, 10))
-            actions.pause(random.uniform(0.2, 0.5))
-            actions.move_to_element(target_element)
-            actions.perform()
-            time.sleep(random.uniform(0.1, 0.3))
-        except Exception as e:
-            self.logger.debug(f"Human mouse move failed: {e}")
+        options.set_capability('bstack:options', bstack_opts)
 
-    # ============================================================
-    # WAIT FOR ADS (Polling)
-    # ============================================================
-    def _wait_for_ads(self):
-        """Poll for ad elements every 2s up to 40s."""
-        from selenium.webdriver.common.by import By
+        logger.info(f"BrowserStack: {browser} on {os_name} {os_version}")
 
-        selectors = [
-            'iframe[src*="highrevenueformat"]',
-            'iframe[src*="effectivecpmnetwork"]',
-            'iframe[src*="profitableratecpmnetwork"]',
-            'iframe[src*="highperformanceformat"]',
-            'div[id^="container-"]',
-            'ins.adsbygoogle',
-            'iframe[src*="doubleclick"]',
-            'iframe[src*="googlesyndication"]',
-        ]
+        self.driver = webdriver.Remote(
+            command_executor='https://hub-cloud.browserstack.com/wd/hub',
+            options=options,
+        )
+        self.driver.set_page_load_timeout(90)
+        self.driver.set_script_timeout(30)
 
-        self.logger.info(f"Polling for ads (up to {self.ADS_WAIT_MAX}s)...")
-        start = time.time()
+        CDPSpoofer.apply(self.driver, fp)
+        ResourceBlocker.setup(self.driver, mode=block_resources)
 
-        while time.time() - start < self.ADS_WAIT_MAX:
-            for selector in selectors:
-                try:
-                    elements = self.client.driver.find_elements(By.CSS_SELECTOR, selector)
-                    if elements:
-                        self.logger.info(f"Ad element found: {selector} ({len(elements)}x)")
-                        return True
-                except Exception:
-                    continue
+        self.current_locale = fp.get('locale', 'en-US')
 
-            # Scroll during wait (triggers lazy ads)
+        if fp.get('viewport'):
             try:
-                self.client.driver.execute_script(
-                    f"window.scrollBy({{top: {random.randint(200, 500)}, behavior: 'smooth'}});"
-                )
+                vw, vh = fp['viewport']
+                self.driver.set_window_size(vw, vh)
             except Exception:
                 pass
 
-            time.sleep(2.0)
-
-        self.logger.warning(f"No ads found after {self.ADS_WAIT_MAX}s polling")
-        return False
-
-    # ============================================================
-    # TRIGGER MONETAG
-    # ============================================================
-    def _trigger_monetag(self):
-        """Monetag triggers on ANY click - simulate one."""
-        try:
-            self.client.driver.execute_script("""
-                (() => {
-                    const x = window.innerWidth / 2;
-                    const y = window.innerHeight / 2;
-                    const el = document.elementFromPoint(x, y) || document.body;
-                    ['mousedown', 'mouseup', 'click'].forEach(type => {
-                        el.dispatchEvent(new MouseEvent(type, {
-                            bubbles: true, cancelable: true, view: window,
-                            clientX: x, clientY: y, button: 0
-                        }));
-                    });
-                    try { el.click(); } catch(e) {}
-                })();
-            """)
-            time.sleep(2)
-            self.logger.info("Monetag triggered via center click")
-        except Exception as e:
-            self.logger.debug(f"Monetag trigger failed: {e}")
+        self.driver.get(url)
+        self.wait_for_page_load(timeout=30)
+        return self.driver
 
     # ============================================================
-    # AGGRESSIVE AD CLICKING (8 strategies) with human-like moves
+    # Common Actions
     # ============================================================
-    def _click_ads_aggressive(self):
-        """Try 8 different strategies for maximum clicks."""
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.common.action_chains import ActionChains
-
-        max_clicks = self.MAX_AD_CLICKS_PER_SESSION
-        self.logger.info(f"Aggressive ad clicking: up to {max_clicks} clicks")
-
+    def click_ads(self, ad_selectors=None, max_clicks=2):
+        selectors = ad_selectors or self.AD_SELECTORS
         clicked = 0
-
-        # --- Script 1: Adsterra Native Bar (container-XXXX) ---
-        js_native = """
-        (() => {
-            const containers = document.querySelectorAll('[id^="container-"]');
-            if (containers.length === 0) return null;
-            const c = containers[Math.floor(Math.random() * containers.length)];
-            c.scrollIntoView({block: 'center', behavior: 'smooth'});
-            const rect = c.getBoundingClientRect();
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            const targets = [
-                document.elementFromPoint(x, y),
-                c.querySelector('iframe'),
-                c.querySelector('a'),
-                c.firstElementChild,
-                c,
-            ].filter(t => t);
-            for (const t of targets) {
-                ['mousedown','mouseup','click'].forEach(evt => {
-                    t.dispatchEvent(new MouseEvent(evt, {
-                        bubbles: true, cancelable: true, view: window,
-                        clientX: x, clientY: y, button: 0
-                    }));
-                });
-                try { t.click(); } catch(e) {}
-            }
-            return 'native-' + c.id;
-        })();
-        """
-
-        # --- Script 2: Adsterra Banners ---
-        js_banners = """
-        (() => {
-            const iframes = document.querySelectorAll('iframe');
-            const banners = [];
-            for (const f of iframes) {
-                const src = (f.src || '').toLowerCase();
-                if (src.includes('highrevenueformat') ||
-                    src.includes('profitableratecpmnetwork') ||
-                    src.includes('effectivecpmnetwork') ||
-                    src.includes('highperformanceformat')) {
-                    banners.push(f);
-                }
-            }
-            if (banners.length === 0) return null;
-            const b = banners[Math.floor(Math.random() * banners.length)];
-            b.scrollIntoView({block: 'center', behavior: 'smooth'});
-            const rect = b.getBoundingClientRect();
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            ['mousedown','mouseup','click'].forEach(evt => {
-                b.dispatchEvent(new MouseEvent(evt, {
-                    bubbles: true, cancelable: true, view: window,
-                    clientX: x, clientY: y, button: 0
-                }));
-            });
-            try { b.click(); } catch(e) {}
-            const el = document.elementFromPoint(x, y);
-            if (el && el !== b) {
-                try { el.click(); } catch(e) {}
-            }
-            return 'banner';
-        })();
-        """
-
-        # --- Script 3: AdSense ins.adsbygoogle ---
-        js_adsense = """
-        (() => {
-            const ins = document.querySelectorAll('ins.adsbygoogle');
-            if (ins.length === 0) return null;
-            const ad = ins[Math.floor(Math.random() * ins.length)];
-            ad.scrollIntoView({block: 'center', behavior: 'smooth'});
-            const rect = ad.getBoundingClientRect();
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            const targets = [
-                ad.querySelector('iframe'),
-                document.elementFromPoint(x, y),
-                ad,
-            ].filter(t => t);
-            for (const t of targets) {
-                ['mousedown','mouseup','click'].forEach(evt => {
-                    t.dispatchEvent(new MouseEvent(evt, {
-                        bubbles: true, cancelable: true, view: window,
-                        clientX: x, clientY: y, button: 0
-                    }));
-                });
-                try { t.click(); } catch(e) {}
-            }
-            return 'adsense';
-        })();
-        """
-
-        # --- Script 4: Any ad iframe ---
-        js_any_iframe = """
-        (() => {
-            const iframes = Array.from(document.querySelectorAll('iframe')).filter(f => {
-                const rect = f.getBoundingClientRect();
-                return rect.width >= 50 && rect.height >= 30 &&
-                       rect.width <= 900 && rect.height <= 800;
-            });
-            if (iframes.length === 0) return null;
-            const b = iframes[Math.floor(Math.random() * iframes.length)];
-            b.scrollIntoView({block: 'center'});
-            const rect = b.getBoundingClientRect();
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            ['mousedown','mouseup','click'].forEach(evt => {
-                b.dispatchEvent(new MouseEvent(evt, {
-                    bubbles: true, cancelable: true, view: window,
-                    clientX: x, clientY: y, button: 0
-                }));
-            });
-            try { b.click(); } catch(e) {}
-            return 'iframe';
-        })();
-        """
-
-        # --- Script 5: Any element with 'ad' in class/id ---
-        js_any_ad = """
-        (() => {
-            const all = document.querySelectorAll('[class*="ad"],[id*="ad"],[class*="banner"],[class*="sponsor"]');
-            if (all.length === 0) return null;
-            const el = all[Math.floor(Math.random() * all.length)];
-            const rect = el.getBoundingClientRect();
-            if (rect.width < 100 || rect.height < 30) return null;
-            el.scrollIntoView({block: 'center'});
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            ['mousedown','mouseup','click'].forEach(evt => {
-                el.dispatchEvent(new MouseEvent(evt, {
-                    bubbles: true, cancelable: true, view: window,
-                    clientX: x, clientY: y, button: 0
-                }));
-            });
-            try { el.click(); } catch(e) {}
-            return 'generic-ad';
-        })();
-        """
-
-        # --- Script 6: Any link (Popunder trigger) ---
-        js_any_link = """
-        (() => {
-            const links = Array.from(document.querySelectorAll('a')).filter(a => {
-                const href = a.getAttribute('href') || '';
-                return href && !href.startsWith('#') && !href.startsWith('javascript:');
-            });
-            if (links.length === 0) return null;
-            const link = links[Math.floor(Math.random() * links.length)];
-            link.scrollIntoView({block: 'center'});
-            const rect = link.getBoundingClientRect();
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            ['mousedown','mouseup','click'].forEach(evt => {
-                link.dispatchEvent(new MouseEvent(evt, {
-                    bubbles: true, cancelable: true, view: window,
-                    clientX: x, clientY: y, button: 0
-                }));
-            });
-            return 'any-link';
-        })();
-        """
-
-        # --- Script 7: Click body center (Popunder) ---
-        js_body_click = """
-        (() => {
-            const x = window.innerWidth / 2;
-            const y = window.innerHeight / 2;
-            const el = document.elementFromPoint(x, y) || document.body;
-            ['mousedown','mouseup','click'].forEach(evt => {
-                el.dispatchEvent(new MouseEvent(evt, {
-                    bubbles: true, cancelable: true, view: window,
-                    clientX: x, clientY: y, button: 0
-                }));
-            });
-            try { el.click(); } catch(e) {}
-            return 'body-center';
-        })();
-        """
-
-        # --- Script 8: Every banner-like element (mass click) ---
-        js_mass_click = """
-        (() => {
-            const selectors = [
-                'ins.adsbygoogle',
-                'div[id^="container-"]',
-                'iframe[src*="adsterra"]',
-                'iframe[src*="monetag"]',
-                'a[href*="adsterra"]',
-                'a[href*="monetag"]',
-                'a[href*="profitablerate"]',
-                'a[href*="highrevenueformat"]',
-            ];
-            let clicked = 0;
-            for (const sel of selectors) {
-                const elements = document.querySelectorAll(sel);
-                elements.forEach(el => {
-                    try {
-                        el.click();
-                        clicked++;
-                    } catch(e) {}
-                });
-            }
-            return clicked > 0 ? 'mass-' + clicked : null;
-        })();
-        """
-
-        strategies = [
-            ('native', js_native),
-            ('banners', js_banners),
-            ('adsense', js_adsense),
-            ('any_iframe', js_any_iframe),
-            ('any_ad', js_any_ad),
-            ('any_link', js_any_link),
-            ('body_click', js_body_click),
-            ('mass_click', js_mass_click),
-        ]
-
-        for round_num in range(3):
+        for selector in selectors:
             if clicked >= max_clicks:
                 break
+            try:
+                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                if not elements:
+                    continue
+                element = random.choice(elements[:5])
+                if not self._safe_click(element):
+                    continue
+                clicked += 1
+                logger.info(f"Clicked ad: {selector}")
+                self.random_sleep(3.0, 7.0)
+                self._close_extra_tabs()
+            except Exception:
+                continue
+        return clicked
 
-            random.shuffle(strategies)
-            for strategy_name, script_code in strategies:
-                if clicked >= max_clicks:
-                    break
+    def fill_form(self, form_data=None, form_selectors=None):
+        selectors = form_selectors or self.FORM_SELECTORS
+        filled = 0
+        for fs in selectors:
+            try:
+                forms = self.driver.find_elements(By.CSS_SELECTOR, fs)
+                for form in forms[:2]:
+                    if self._fill_single_form(form, form_data):
+                        filled += 1
+                        logger.info(f"Filled form: {fs}")
+            except Exception:
+                continue
+        return filled
 
-                self.click_attempts += 1
-                try:
-                    # Try to find the element and use human-like mouse move
-                    # For simplicity, we'll use JS for most, but add human mouse for native/banners
-                    if strategy_name in ['native', 'banners', 'adsense']:
-                        # Attempt to locate the element to move mouse to it
-                        try:
-                            if strategy_name == 'native':
-                                el = self.client.driver.find_element(By.CSS_SELECTOR, '[id^="container-"]')
-                            elif strategy_name == 'banners':
-                                el = self.client.driver.find_element(By.CSS_SELECTOR, 'iframe[src*="highrevenueformat"], iframe[src*="effectivecpmnetwork"]')
-                            else:  # adsense
-                                el = self.client.driver.find_element(By.CSS_SELECTOR, 'ins.adsbygoogle')
-                            self._human_mouse_move(el)
-                        except Exception:
-                            pass  # If element not found, just use JS
-
-                    result = self.client.driver.execute_script(script_code)
-                    if result:
-                        clicked += 1
-                        self.ads_clicked += 1
-                        self.logger.info(
-                            f"[Round {round_num+1}] Clicked via {strategy_name}: {result}"
-                        )
-
-                        time.sleep(random.uniform(3.0, 6.0))
-                        self._close_extra_tabs()
-                        time.sleep(random.uniform(2.0, 4.0))
-
-                        try:
-                            self.client.driver.execute_script(
-                                "window.scrollBy({top: 400, behavior: 'smooth'});"
-                            )
-                        except Exception:
-                            pass
-                        time.sleep(random.uniform(1.5, 3.0))
-
-                except Exception as e:
-                    self.logger.debug(f"[Round {round_num+1}] {strategy_name} failed: {e}")
-
-        self.logger.info(
-            f"Total clicks: {clicked} | Attempts: {self.click_attempts}"
-        )
-
-    def _close_extra_tabs(self):
-        """Close Adsterra Popunder tabs."""
+    def _fill_single_form(self, form, form_data=None):
+        data = form_data or self._generate_form_data()
+        filled_any = False
+        for field_sel, value in data.items():
+            try:
+                field = form.find_element(By.CSS_SELECTOR, field_sel)
+                if not (field.is_displayed() and field.is_enabled()):
+                    continue
+                field.clear()
+                self.human_type(field, value)
+                filled_any = True
+            except (NoSuchElementException, ElementNotInteractableException):
+                continue
+        if not filled_any:
+            return False
         try:
-            handles = self.client.driver.window_handles
-            if len(handles) > 1:
-                main = handles[0]
-                for handle in handles[1:]:
-                    self.client.driver.switch_to.window(handle)
-                    time.sleep(random.uniform(2.0, 4.0))
-                    try:
-                        self.client.driver.execute_script("window.scrollBy(0, 300);")
-                        time.sleep(1.5)
-                    except Exception:
-                        pass
-                    self.client.driver.close()
-                self.client.driver.switch_to.window(main)
-                self.logger.info(f"Closed {len(handles) - 1} extra tabs")
-        except Exception as e:
-            self.logger.debug(f"Tab close error: {e}")
-
-    # ============================================================
-    # SCROLL
-    # ============================================================
-    def _random_scroll(self):
-        try:
-            count = random.randint(self.SCROLL_MIN, self.SCROLL_MAX)
-            for i in range(count):
-                pixels = random.randint(300, 700)
-                self.client.driver.execute_script(
-                    f"window.scrollBy({{top: {pixels}, behavior: 'smooth'}});"
-                )
-                time.sleep(random.uniform(0.7, 1.8))
-                if random.random() < 0.3:
-                    self.client.driver.execute_script(
-                        f"window.scrollBy({{top: -{random.randint(100, 300)}, behavior: 'smooth'}});"
-                    )
-                    time.sleep(random.uniform(0.5, 1.0))
-            self.scroll_count = count
+            submit = form.find_element(
+                By.CSS_SELECTOR,
+                'button[type="submit"], input[type="submit"]',
+            )
+            if submit.is_displayed() and submit.is_enabled():
+                self._safe_click(submit)
+                self.random_sleep(2.0, 4.0)
+                return True
         except Exception:
             pass
+        return filled_any
 
-    # ============================================================
-    # INTERNAL LINKS
-    # ============================================================
-    def _click_internal_links(self):
-        from selenium.webdriver.common.by import By
+    def human_type(self, element, text, min_delay=0.04, max_delay=0.20):
+        for char in text:
+            element.send_keys(char)
+            time.sleep(random.uniform(min_delay, max_delay))
+            if random.random() < 0.02:
+                element.send_keys(Keys.BACKSPACE)
+                time.sleep(random.uniform(0.1, 0.3))
+                element.send_keys(char)
+                time.sleep(random.uniform(min_delay, max_delay))
+
+    def bezier_mouse_move(self, target):
         try:
-            count = random.randint(self.INTERNAL_LINKS_MIN, self.INTERNAL_LINKS_MAX)
-            clicked = 0
-            selectors = [
-                'article a:not([href^="#"])',
-                'h2 a',
-                'h3 a',
-                '.post-title a',
-                '.entry-title a',
-                'main a:not([href^="#"])',
-            ]
-            for selector in selectors:
-                if clicked >= count:
-                    break
+            loc = target.location
+            sz = target.size
+            tx = loc['x'] + sz['width'] // 2
+            ty = loc['y'] + sz['height'] // 2
+            sx = random.randint(0, 200)
+            sy = random.randint(0, 200)
+            points = BezierMouse.bezier_points(sx, sy, tx, ty, steps=20)
+            body = self.driver.find_element(By.TAG_NAME, 'body')
+            actions = ActionChains(self.driver)
+            for x, y in points:
                 try:
-                    links = self.client.driver.find_elements(By.CSS_SELECTOR, selector)
-                    if not links:
-                        continue
-                    link = random.choice(links[:5])
-                    if not link.is_displayed():
-                        continue
-                    href = link.get_attribute('href') or ''
-                    if not href or href.startswith('#') or 'forjo.tech' not in href:
-                        continue
-
-                    # Human-like mouse move before click
-                    self._human_mouse_move(link)
-                    self.client.driver.execute_script(
-                        "arguments[0].scrollIntoView({block: 'center'});", link
-                    )
-                    time.sleep(random.uniform(0.8, 1.5))
-                    link.click()
-                    time.sleep(random.uniform(4.0, 8.0))
-
-                    self.client.driver.execute_script("window.scrollBy(0, 500);")
-                    time.sleep(random.uniform(3.0, 6.0))
-
-                    # Click ads on new page too
-                    self.client.driver.execute_script("""
-                        (() => {
-                            const iframes = document.querySelectorAll('iframe');
-                            for (const f of iframes) {
-                                try { f.click(); } catch(e) {}
-                            }
-                        })();
-                    """)
-                    time.sleep(2.0)
-
-                    clicked += 1
-                    self.internal_clicks += 1
-                    self.client.driver.back()
-                    time.sleep(random.uniform(2.0, 4.0))
+                    actions.move_to_element_with_offset(body, x, y)
+                    actions.pause(random.uniform(0.005, 0.02))
                 except Exception:
                     continue
+            actions.perform()
+            return True
+        except Exception:
+            return False
+
+    def human_scroll(self, count=5):
+        for i in range(count):
+            pixels = random.randint(250, 750)
+            if i < 2 or i >= count - 1:
+                self.driver.execute_script(
+                    f"window.scrollBy({{top: {pixels}, behavior: 'smooth'}});"
+                )
+                self.random_sleep(1.2, 2.5)
+            else:
+                self.driver.execute_script(
+                    f"window.scrollBy({{top: {pixels * 2}, behavior: 'smooth'}});"
+                )
+                self.random_sleep(0.6, 1.2)
+            if random.random() < 0.2:
+                self.driver.execute_script(
+                    f"window.scrollBy({{top: -{random.randint(100, 250)}, behavior: 'smooth'}});"
+                )
+                self.random_sleep(0.5, 1.0)
+
+    def random_sleep(self, min_s, max_s):
+        time.sleep(random.uniform(min_s, max_s))
+
+    def _safe_click(self, element, max_retries=3):
+        for attempt in range(max_retries):
+            try:
+                if not element.is_displayed():
+                    return False
+                self.driver.execute_script(
+                    "arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});",
+                    element,
+                )
+                self.random_sleep(0.5, 1.2)
+                try:
+                    element.click()
+                except ElementClickInterceptedException:
+                    self.driver.execute_script("arguments[0].click();", element)
+                return True
+            except StaleElementReferenceException:
+                time.sleep(0.5)
+            except Exception:
+                time.sleep(0.5)
+        return False
+
+    def _close_extra_tabs(self):
+        try:
+            if len(self.driver.window_handles) > 1:
+                main = self.driver.window_handles[0]
+                for handle in self.driver.window_handles[1:]:
+                    self.driver.switch_to.window(handle)
+                    self.random_sleep(1.5, 3.0)
+                    self.driver.close()
+                self.driver.switch_to.window(main)
         except Exception:
             pass
 
-    # ============================================================
-    # DWELL
-    # ============================================================
-    def _dwell(self):
+    def is_captcha_page(self):
         try:
-            duration = random.randint(self.DWELL_TIME_MIN, self.DWELL_TIME_MAX)
-            self.logger.info(f"Dwelling {duration}s...")
-            start = time.time()
-            while time.time() - start < duration:
-                time.sleep(random.uniform(5, 12))
-                if random.random() < 0.7:
-                    try:
-                        self.client.driver.execute_script(
-                            f"window.scrollBy({{top: {random.randint(200, 500)}, behavior: 'smooth'}});"
-                        )
-                    except Exception:
-                        pass
-
-                # Random ad clicks during dwell
-                if random.random() < 0.3:
-                    try:
-                        self.client.driver.execute_script("""
-                            (() => {
-                                const ads = document.querySelectorAll(
-                                    'ins.adsbygoogle, div[id^="container-"], iframe[src*="highrevenueformat"]'
-                                );
-                                if (ads.length > 0) {
-                                    const ad = ads[Math.floor(Math.random() * ads.length)];
-                                    try { ad.click(); } catch(e) {}
-                                }
-                            })();
-                        """)
-                    except Exception:
-                        pass
-
-            self.dwell_time = int(time.time() - start)
+            url = self.driver.current_url.lower()
+            title = (self.driver.title or '').lower()
+            try:
+                source = self.driver.page_source.lower()[:5000]
+            except Exception:
+                source = ''
+            for sig in self.CAPTCHA_SIGNALS:
+                if sig in url or sig in title or sig in source:
+                    return True
+            return False
         except Exception:
-            self.dwell_time = 90
+            return False
 
-    # ============================================================
-    # PROXY
-    # ============================================================
-    def _pick_proxy(self):
-        if os.environ.get('DISABLE_PROXIES', 'false').lower() == 'true':
+    def wait_for_page_load(self, timeout=30):
+        try:
+            WebDriverWait(self.driver, timeout).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
+        except TimeoutException:
+            pass
+
+    def save_cookies(self, path='cookies.json'):
+        try:
+            with open(path, 'w') as f:
+                json.dump(self.driver.get_cookies(), f)
+        except Exception:
+            pass
+
+    def load_cookies(self, path='cookies.json'):
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path) as f:
+                for c in json.load(f):
+                    try:
+                        self.driver.add_cookie(c)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _generate_form_data(self):
+        locales_data = {
+            'en-US': (['John', 'Jane', 'Alex'], ['Smith', 'Brown'],
+                      ['Great content!', 'Very helpful.'], ['Inquiry', 'Question']),
+            'fr-FR': (['Pierre', 'Marie'], ['Dupont', 'Martin'],
+                      ['Excellent!', 'Tres informatif.'], ['Demande', 'Question']),
+            'de-DE': (['Hans', 'Anna'], ['Muller', 'Schmidt'],
+                      ['Toller Inhalt!', 'Sehr informativ.'], ['Anfrage', 'Frage']),
+        }
+        locale = self.current_locale if self.current_locale in locales_data else 'en-US'
+        fnames, lnames, msgs, subs = locales_data[locale]
+        return {
+            'input[type="email"]': self._fake_email(),
+            'input[name*="name"]': f"{random.choice(fnames)} {random.choice(lnames)}",
+            'textarea[name*="message"]': random.choice(msgs),
+            'input[name*="subject"]': random.choice(subs),
+            'input[type="tel"]': self._fake_phone(),
+        }
+
+    def _fake_email(self):
+        domains = ['gmail.com', 'yahoo.com', 'outlook.com']
+        names = ['john', 'jane', 'alex', 'sarah', 'mike']
+        return f"{random.choice(names)}{random.randint(100, 9999)}@{random.choice(domains)}"
+
+    def _fake_phone(self):
+        countries = ['+212', '+33', '+44', '+1', '+49']
+        return f"{random.choice(countries)}{random.randint(600000000, 999999999)}"
+
+    def _random_fp(self):
+        locale = random.choice(self.LOCALES)
+        return {
+            'locale': locale,
+            'timezone': self.TIMEZONES[locale],
+            'platform': 'Win32',
+            'vendor': 'Google Inc.',
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'viewport': random.choice(self.VIEWPORTS),
+            'webgl_vendor': 'Google Inc. (NVIDIA)',
+            'webgl_renderer': 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0)',
+            'hardware_concurrency': random.choice([4, 8, 12, 16]),
+            'device_memory': random.choice([4, 8, 16]),
+            'langs': [locale, locale.split('-')[0]],
+        }
+
+    def take_screenshot(self, filename=None):
+        if not filename:
+            filename = f"screenshot_{int(time.time())}.png"
+        try:
+            self.driver.save_screenshot(filename)
+            return filename
+        except Exception:
             return None
-        if os.environ.get('USE_PROXY_WITH_BROWSER', 'false').lower() != 'true':
-            return None
-        if self._proxy_provider is None:
-            self._proxy_provider = BrowserProxyProvider()
-        return self._proxy_provider.pick()
 
-    # ============================================================
-    # SESSION STARTERS
-    # ============================================================
-    def _start_browserstack(self, proxy=None):
-        username = os.environ.get('BROWSERSTACK_USERNAME', '').strip()
-        access_key = os.environ.get('BROWSERSTACK_ACCESS_KEY', '').strip()
-        self.client = BrowserStackClient(username, access_key)
-        browser, os_name, os_version = random.choice(self.BROWSERSTACK_BROWSERS)
-        self.logger.info(f"BrowserStack: {browser} on {os_name} {os_version}")
-        return self.client.start_session(
-            url=self.target_url,
-            browser=browser,
-            os_name=os_name,
-            os_version=os_version,
-            proxy=proxy,
-            use_local=False,
-        )
+    def close(self):
+        if self.driver:
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+            finally:
+                self.driver = None
 
-    def _start_local(self, proxy=None):
-        self.client = LocalBrowserClient()
-        self.logger.info("Local Chrome")
-        return self.client.start_session(
-            url=self.target_url,
-            headless=True,
-            proxy=proxy,
-        )
 
-    def handle_error(self, failure):
-        self.logger.error(f"{failure.request.url} | {failure.value}")
+# ============================================================
+# Local Browser Client
+# ============================================================
+class LocalBrowserClient(BrowserStackClient):
+    """Local Chrome with anti-detection"""
 
-    def closed(self, reason):
-        self.logger.info(
-            f"Closed ({reason}) | ads={self.ads_clicked} attempts={self.click_attempts}"
-        )
+    def __init__(self):
+        super().__init__()
+        self._profile_dir = None
+
+    def start_session(self, url, headless=True, proxy=None, fp=None,
+                      block_resources='balanced'):
+        fp = fp or self._random_fp()
+        options = Options()
+        vw, vh = fp.get('viewport', (1920, 1080))
+        locale = fp.get('locale', 'en-US')
+
+        if headless:
+            options.add_argument('--headless=new')
+
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
+        options.add_argument('--disable-software-rasterizer')
+        options.add_argument('--disable-setuid-sandbox')
+        options.add_argument(f'--window-size={vw},{vh}')
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_argument('--disable-infobars')
+        options.add_argument('--disable-notifications')
+        options.add_argument(f'--lang={locale}')
+        options.add_argument('--log-level=3')
+
+        # Try undetected-chromedriver first
+        try:
+            import undetected_chromedriver as uc
+            logger.info("Using undetected-chromedriver")
+            driver = uc.Chrome(options=options, use_subprocess=True)
+        except Exception as e:
+            logger.warning(f"uc.Chrome failed: {e}. Using plain Chrome")
+            chrome_bin = os.environ.get('CHROME_BIN', '/usr/local/bin/google-chrome')
+            if os.path.exists(chrome_bin):
+                options.binary_location = chrome_bin
+
+            if proxy:
+                options.add_argument(f'--proxy-server={proxy}')
+
+            self._profile_dir = tempfile.mkdtemp(prefix='chrome_profile_')
+            options.add_argument(f'--user-data-dir={self._profile_dir}')
+
+            cd_path = os.environ.get('CHROMEDRIVER_PATH', '/usr/local/bin/chromedriver')
+            if os.path.exists(cd_path):
+                service = Service(executable_path=cd_path)
+                driver = webdriver.Chrome(service=service, options=options)
+            else:
+                driver = webdriver.Chrome(options=options)
+
+        self.driver = driver
+
+        # Apply anti-detection
+        CDPSpoofer.apply(self.driver, fp)
+        ResourceBlocker.setup(self.driver, mode=block_resources)
+
+        # Extra stealth
+        try:
+            self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                'source': '''
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+                    Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
+                '''
+            })
+        except Exception:
+            pass
+
+        self.current_locale = locale
+        self.driver.set_page_load_timeout(60)
+        self.driver.set_script_timeout(30)
+        self.driver.get(url)
+        self.wait_for_page_load(timeout=30)
+        return self.driver
