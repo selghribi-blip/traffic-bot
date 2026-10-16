@@ -4,6 +4,9 @@
 # Format: http://user:pass@host:port
 # ============================================================
 
+# ---------- QuantumProxies - Residential US (HTTP) ----------
+http://qp_cmva2x_iujvwd982076-type-residential-country-us:quantWlMpe2NlksYz1hxng5HEWZXXgDeUXaa@residentialboson.quantumproxies.io:11000
+
 # ---------- TrueProxies - Residential US (HTTP) ----------
 http://z7myfiqdu8em-country-us-rotate:b2SJKrm7e4r174KrDsiJ@resi-ipv4-1.gw.tprx.io:8080
 
