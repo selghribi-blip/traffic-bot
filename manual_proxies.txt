@@ -1,21 +1,16 @@
 # manual_proxies.txt
 # ============================================================
-# SECTION 1: RESIDENTIAL PROXIES (Priority for Adsterra)
-# Format: http://user:pass@host:port
+# SECTION 1: WORKING RESIDENTIAL PROXIES
+# Priority for Adsterra (Real Residential IP)
 # ============================================================
 
-# ---------- QuantumProxies - Residential US (HTTP) ----------
-http://qp_cmva2x_iujvwd982076-type-residential-country-us:quantWlMpe2NlksYz1hxng5HEWZXXgDeUXaa@residentialboson.quantumproxies.io:11000
-
-# ---------- TrueProxies - Residential US (HTTP) ----------
-http://z7myfiqdu8em-country-us-rotate:b2SJKrm7e4r174KrDsiJ@resi-ipv4-1.gw.tprx.io:8080
-
-# ---------- Oxylabs - Residential (HTTP) ----------
-http://customer-resi_dee21e30-sessid-0072328580-sesstime-10:E9V~Ywy_8hE3@pr.oxylabs.io:7777
+# ---------- Oxylabs Residential (Portugal MEO) ----------
+# ✅ VERIFIED WORKING - AS3243 MEO (Portugal Residential)
 http://resi_cef75b58:4QDHq41b=GGc@pr.oxylabs.io:7777
 
 # ============================================================
-# SECTION 2: PROXYSCRAPE DATACENTER (NOT residential!)
+# SECTION 2: PROXYSCRAPE DATACENTER (Fallback)
+# Not residential - ads may not show
 # ============================================================
 http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.167.19.221:3129
 http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.52.161:3129
@@ -119,7 +114,7 @@ http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.207.37.197:3129
 http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.240.214:3129
 
 # ============================================================
-# SECTION 3: WEBSHARE (Datacenter - Fallback)
+# SECTION 3: WEBSHARE (Datacenter - Last Resort)
 # Format: ip:port:user:pass
 # ============================================================
 
@@ -244,7 +239,7 @@ http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.240.214:3129
 198.46.161.42:5092:dqagenat:iai2pf3xd2vs
 
 # ============================================================
-# SECTION 4: SOCKS5 (Free - HTTPS fallback)
+# SECTION 4: SOCKS5 (Free - Last Fallback)
 # ============================================================
 5.255.103.55:1080
 5.255.123.162:1080
