@@ -25,7 +25,7 @@ class BrowserStackSpider(scrapy.Spider):
         ('chrome', 'Windows', '11'),
         ('chrome', 'Windows', '10'),
         ('chrome', 'OS X', 'Ventura'),
-        ('firefox', 'Windows', '11'),
+    #   ('firefox', 'Windows', '11'),
         ('edge', 'Windows', '11'),
     ]
 
