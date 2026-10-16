@@ -1,5 +1,5 @@
 # spiders/browserstack_spider.py
-# Adsterra + Monetag - Maximum click attempts
+# Advanced Adsterra + Monetag with human-like behavior
 import os
 import random
 import time
@@ -32,7 +32,7 @@ class BrowserStackSpider(scrapy.Spider):
     # ============================================================
     # Aggressive settings for max clicks
     # ============================================================
-    AD_CLICK_PROBABILITY = 1.0      # Always try
+    AD_CLICK_PROBABILITY = 1.0
     MAX_AD_CLICKS_PER_SESSION = 5
     DWELL_TIME_MIN = 90
     DWELL_TIME_MAX = 150
@@ -40,7 +40,7 @@ class BrowserStackSpider(scrapy.Spider):
     INTERNAL_LINKS_MAX = 4
     SCROLL_MIN = 8
     SCROLL_MAX = 15
-    ADS_WAIT_MAX = 40               # Polling up to 40s
+    ADS_WAIT_MAX = 40
 
     def __init__(self, target_url=None, use_browserstack='true', *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -167,10 +167,24 @@ class BrowserStackSpider(scrapy.Spider):
         }
 
     # ============================================================
+    # Human-like mouse movement
+    # ============================================================
+    def _human_mouse_move(self, target_element):
+        from selenium.webdriver.common.action_chains import ActionChains
+        try:
+            actions = ActionChains(self.client.driver)
+            actions.move_to_element_with_offset(target_element, random.randint(-10, 10), random.randint(-10, 10))
+            actions.pause(random.uniform(0.2, 0.5))
+            actions.move_to_element(target_element)
+            actions.perform()
+            time.sleep(random.uniform(0.1, 0.3))
+        except Exception as e:
+            self.logger.debug(f"Human mouse move failed: {e}")
+
+    # ============================================================
     # WAIT FOR ADS (Polling)
     # ============================================================
     def _wait_for_ads(self):
-        """Poll for ad elements every 2s up to 40s."""
         from selenium.webdriver.common.by import By
 
         selectors = [
@@ -197,7 +211,6 @@ class BrowserStackSpider(scrapy.Spider):
                 except Exception:
                     continue
 
-            # Scroll during wait (triggers lazy ads)
             try:
                 self.client.driver.execute_script(
                     f"window.scrollBy({{top: {random.randint(200, 500)}, behavior: 'smooth'}});"
@@ -214,7 +227,6 @@ class BrowserStackSpider(scrapy.Spider):
     # TRIGGER MONETAG
     # ============================================================
     def _trigger_monetag(self):
-        """Monetag triggers on ANY click - simulate one."""
         try:
             self.client.driver.execute_script("""
                 (() => {
@@ -239,18 +251,14 @@ class BrowserStackSpider(scrapy.Spider):
     # AGGRESSIVE AD CLICKING (8 strategies)
     # ============================================================
     def _click_ads_aggressive(self):
-        """Try 8 different strategies for maximum clicks."""
         from selenium.webdriver.common.by import By
-        from selenium.webdriver.common.action_chains import ActionChains
 
         max_clicks = self.MAX_AD_CLICKS_PER_SESSION
         self.logger.info(f"Aggressive ad clicking: up to {max_clicks} clicks")
 
         clicked = 0
 
-        # ============================================================
-        # Script 1: Adsterra Native Bar (container-XXXX)
-        # ============================================================
+        # --- Script 1: Adsterra Native Bar ---
         js_native = """
         (() => {
             const containers = document.querySelectorAll('[id^="container-"]');
@@ -280,9 +288,7 @@ class BrowserStackSpider(scrapy.Spider):
         })();
         """
 
-        # ============================================================
-        # Script 2: Adsterra Banners
-        # ============================================================
+        # --- Script 2: Adsterra Banners ---
         js_banners = """
         (() => {
             const iframes = document.querySelectorAll('iframe');
@@ -317,9 +323,7 @@ class BrowserStackSpider(scrapy.Spider):
         })();
         """
 
-        # ============================================================
-        # Script 3: AdSense ins.adsbygoogle
-        # ============================================================
+        # --- Script 3: AdSense ---
         js_adsense = """
         (() => {
             const ins = document.querySelectorAll('ins.adsbygoogle');
@@ -347,9 +351,7 @@ class BrowserStackSpider(scrapy.Spider):
         })();
         """
 
-        # ============================================================
-        # Script 4: Any ad iframe
-        # ============================================================
+        # --- Script 4: Any ad iframe ---
         js_any_iframe = """
         (() => {
             const iframes = Array.from(document.querySelectorAll('iframe')).filter(f => {
@@ -374,9 +376,7 @@ class BrowserStackSpider(scrapy.Spider):
         })();
         """
 
-        # ============================================================
-        # Script 5: Any element with 'ad' in class/id
-        # ============================================================
+        # --- Script 5: Any element with 'ad' ---
         js_any_ad = """
         (() => {
             const all = document.querySelectorAll('[class*="ad"],[id*="ad"],[class*="banner"],[class*="sponsor"]');
@@ -398,9 +398,7 @@ class BrowserStackSpider(scrapy.Spider):
         })();
         """
 
-        # ============================================================
-        # Script 6: Any link (Popunder trigger)
-        # ============================================================
+        # --- Script 6: Any link (Popunder) ---
         js_any_link = """
         (() => {
             const links = Array.from(document.querySelectorAll('a')).filter(a => {
@@ -423,9 +421,7 @@ class BrowserStackSpider(scrapy.Spider):
         })();
         """
 
-        # ============================================================
-        # Script 7: Click body center (Popunder)
-        # ============================================================
+        # --- Script 7: Body center click ---
         js_body_click = """
         (() => {
             const x = window.innerWidth / 2;
@@ -442,9 +438,7 @@ class BrowserStackSpider(scrapy.Spider):
         })();
         """
 
-        # ============================================================
-        # Script 8: Every banner-like element (mass click)
-        # ============================================================
+        # --- Script 8: Mass click ---
         js_mass_click = """
         (() => {
             const selectors = [
@@ -471,9 +465,6 @@ class BrowserStackSpider(scrapy.Spider):
         })();
         """
 
-        # ============================================================
-        # Run strategies
-        # ============================================================
         strategies = [
             ('native', js_native),
             ('banners', js_banners),
@@ -485,7 +476,6 @@ class BrowserStackSpider(scrapy.Spider):
             ('mass_click', js_mass_click),
         ]
 
-        # Run 3 rounds of all strategies
         for round_num in range(3):
             if clicked >= max_clicks:
                 break
@@ -497,6 +487,18 @@ class BrowserStackSpider(scrapy.Spider):
 
                 self.click_attempts += 1
                 try:
+                    if strategy_name in ['native', 'banners', 'adsense']:
+                        try:
+                            if strategy_name == 'native':
+                                el = self.client.driver.find_element(By.CSS_SELECTOR, '[id^="container-"]')
+                            elif strategy_name == 'banners':
+                                el = self.client.driver.find_element(By.CSS_SELECTOR, 'iframe[src*="highrevenueformat"], iframe[src*="effectivecpmnetwork"]')
+                            else:
+                                el = self.client.driver.find_element(By.CSS_SELECTOR, 'ins.adsbygoogle')
+                            self._human_mouse_move(el)
+                        except Exception:
+                            pass
+
                     result = self.client.driver.execute_script(script_code)
                     if result:
                         clicked += 1
@@ -509,7 +511,6 @@ class BrowserStackSpider(scrapy.Spider):
                         self._close_extra_tabs()
                         time.sleep(random.uniform(2.0, 4.0))
 
-                        # Scroll after click
                         try:
                             self.client.driver.execute_script(
                                 "window.scrollBy({top: 400, behavior: 'smooth'});"
@@ -526,7 +527,6 @@ class BrowserStackSpider(scrapy.Spider):
         )
 
     def _close_extra_tabs(self):
-        """Close Adsterra Popunder tabs."""
         try:
             handles = self.client.driver.window_handles
             if len(handles) > 1:
@@ -534,7 +534,6 @@ class BrowserStackSpider(scrapy.Spider):
                 for handle in handles[1:]:
                     self.client.driver.switch_to.window(handle)
                     time.sleep(random.uniform(2.0, 4.0))
-                    # Simulate reading the ad page
                     try:
                         self.client.driver.execute_script("window.scrollBy(0, 300);")
                         time.sleep(1.5)
@@ -546,9 +545,6 @@ class BrowserStackSpider(scrapy.Spider):
         except Exception as e:
             self.logger.debug(f"Tab close error: {e}")
 
-    # ============================================================
-    # SCROLL
-    # ============================================================
     def _random_scroll(self):
         try:
             count = random.randint(self.SCROLL_MIN, self.SCROLL_MAX)
@@ -567,9 +563,6 @@ class BrowserStackSpider(scrapy.Spider):
         except Exception:
             pass
 
-    # ============================================================
-    # INTERNAL LINKS
-    # ============================================================
     def _click_internal_links(self):
         from selenium.webdriver.common.by import By
         try:
@@ -597,6 +590,7 @@ class BrowserStackSpider(scrapy.Spider):
                     if not href or href.startswith('#') or 'forjo.tech' not in href:
                         continue
 
+                    self._human_mouse_move(link)
                     self.client.driver.execute_script(
                         "arguments[0].scrollIntoView({block: 'center'});", link
                     )
@@ -604,11 +598,9 @@ class BrowserStackSpider(scrapy.Spider):
                     link.click()
                     time.sleep(random.uniform(4.0, 8.0))
 
-                    # Scroll + wait on new page
                     self.client.driver.execute_script("window.scrollBy(0, 500);")
                     time.sleep(random.uniform(3.0, 6.0))
 
-                    # Click ads on new page too!
                     self.client.driver.execute_script("""
                         (() => {
                             const iframes = document.querySelectorAll('iframe');
@@ -628,9 +620,6 @@ class BrowserStackSpider(scrapy.Spider):
         except Exception:
             pass
 
-    # ============================================================
-    # DWELL
-    # ============================================================
     def _dwell(self):
         try:
             duration = random.randint(self.DWELL_TIME_MIN, self.DWELL_TIME_MAX)
@@ -646,7 +635,6 @@ class BrowserStackSpider(scrapy.Spider):
                     except Exception:
                         pass
 
-                # Random ad clicks during dwell
                 if random.random() < 0.3:
                     try:
                         self.client.driver.execute_script("""
@@ -667,9 +655,6 @@ class BrowserStackSpider(scrapy.Spider):
         except Exception:
             self.dwell_time = 90
 
-    # ============================================================
-    # PROXY
-    # ============================================================
     def _pick_proxy(self):
         if os.environ.get('DISABLE_PROXIES', 'false').lower() == 'true':
             return None
@@ -679,9 +664,6 @@ class BrowserStackSpider(scrapy.Spider):
             self._proxy_provider = BrowserProxyProvider()
         return self._proxy_provider.pick()
 
-    # ============================================================
-    # SESSION STARTERS
-    # ============================================================
     def _start_browserstack(self, proxy=None):
         username = os.environ.get('BROWSERSTACK_USERNAME', '').strip()
         access_key = os.environ.get('BROWSERSTACK_ACCESS_KEY', '').strip()
