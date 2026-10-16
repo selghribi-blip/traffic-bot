@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   # ============================================================
-  # 1) SCRAPY SPIDER - 10 parallel sessions
+  # 1) SCRAPY SPIDER
   # ============================================================
   run-scrapy-spider:
     name: Scrapy #${{ matrix.attempt }}
@@ -34,9 +34,9 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        attempt: [1, 2, 3, 4, 5]
       fail-fast: false
-      max-parallel: 5
+      max-parallel: 3
     steps:
       - uses: actions/checkout@v4
 
@@ -74,7 +74,7 @@ jobs:
           retention-days: 3
 
   # ============================================================
-  # 2) LOCAL CHROME - 40 parallel sessions
+  # 2) LOCAL CHROME — with auto Chrome version
   # ============================================================
   run-local-browser-spider:
     name: Local #${{ matrix.attempt }}
@@ -83,12 +83,12 @@ jobs:
       github.event.inputs.run_mode == 'both' ||
       github.event.inputs.run_mode == 'local'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     strategy:
       matrix:
-        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]
+        attempt: [1, 2, 3, 4, 5]
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 2
     steps:
       - uses: actions/checkout@v4
 
@@ -97,19 +97,37 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - name: Install Chrome + ChromeDriver
+      - name: Install Chrome (Latest Stable)
         run: |
           sudo apt-get update
           sudo apt-get install -y wget unzip xvfb
-          CHROME_VERSION="131.0.6778.87"
-          wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-linux64.zip"
-          wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip"
-          unzip -q chrome-linux64.zip
-          unzip -q chromedriver-linux64.zip
-          sudo mv chrome-linux64 /opt/chrome
-          sudo mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
+
+          # Install latest Google Chrome
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo dpkg -i google-chrome-stable_current_amd64.deb || sudo apt-get -fy install
+          google-chrome --version
+
+          # Install matching ChromeDriver from Chrome for Testing
+          CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+')
+          echo "Chrome version: $CHROME_VERSION"
+
+          # Try Chrome for Testing
+          if wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip" -O /tmp/cd.zip; then
+            unzip -q /tmp/cd.zip -d /tmp/
+            sudo mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
+          else
+            # Fallback to older CDN
+            wget -q "https://chromedriver.storage.googleapis.com/${CHROME_VERSION}/chromedriver_linux64.zip" -O /tmp/cd.zip
+            unzip -q /tmp/cd.zip -d /tmp/
+            sudo mv /tmp/chromedriver /usr/local/bin/chromedriver
+          fi
+
           sudo chmod +x /usr/local/bin/chromedriver
-          sudo ln -sf /opt/chrome/chrome /usr/local/bin/google-chrome
+          /usr/local/bin/chromedriver --version
+
+          # Set environment variables
+          echo "CHROME_BIN=/usr/bin/google-chrome" >> $GITHUB_ENV
+          echo "CHROMEDRIVER_PATH=/usr/local/bin/chromedriver" >> $GITHUB_ENV
 
       - name: Install Python deps
         run: |
@@ -121,7 +139,7 @@ jobs:
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           TARGET_URL: ${{ github.event.inputs.target_url || vars.TARGET_URL || 'https://www.forjo.tech/' }}
-          CHROME_BIN: '/usr/local/bin/google-chrome'
+          CHROME_BIN: '/usr/bin/google-chrome'
           CHROMEDRIVER_PATH: '/usr/local/bin/chromedriver'
           USE_PROXY_WITH_BROWSER: 'true'
           MANUAL_PROXY_FILE: 'manual_proxies.txt'
@@ -141,7 +159,7 @@ jobs:
           retention-days: 3
 
   # ============================================================
-  # 3) BROWSERSTACK - 3x daily (8-hour gaps)
+  # 3) BROWSERSTACK
   # ============================================================
   run-browserstack-spider:
     name: BrowserStack
@@ -150,7 +168,7 @@ jobs:
       github.event.inputs.run_mode == 'both' ||
       github.event.inputs.run_mode == 'browserstack'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -187,12 +205,11 @@ jobs:
           retention-days: 3
 
   # ============================================================
-  # 4) EXPORT DATA (Manual / Scheduled)
+  # 4) EXPORT DATA
   # ============================================================
   export-data:
     name: Export Data
-    if: |
-      github.event.inputs.run_mode == 'export'
+    if: github.event.inputs.run_mode == 'export'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -203,17 +220,14 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install pymongo pandas openpyxl
+        run: pip install pymongo pandas openpyxl
 
-      - name: Export MongoDB to CSV + Excel
+      - name: Export
         env:
           MONGODB_URI: ${{ secrets.MONGODB_URI }}
           EXPORT_DAYS: '7'
           EXPORT_DIR: './exports'
-        run: |
-          python scripts/export_mongo.py
+        run: python scripts/export_mongo.py
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -241,14 +255,12 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install pymongo
-        run: pip install pymongo
-
       - name: Aggregate
         run: |
           echo "=== TRAFFIC BOT RUN SUMMARY ==="
           echo "Run: ${{ github.run_number }} | Trigger: ${{ github.event_name }}"
           echo ""
+
           total=$(python3 - <<'PYEOF'
           import json, glob
           total = 0
@@ -276,7 +288,7 @@ jobs:
               except: pass
           print(t)
           ")
-          echo "Local visits: $local_count"
+          echo "Local items: $local_count"
 
           scrapy_count=$(python3 -c "
           import json, glob
@@ -303,4 +315,4 @@ jobs:
           token: ${{ github.token }}
           repository: ${{ github.repository }}
           retain_days: 3
-          keep_minimum_runs: 30
+          keep_minimum_runs: 20
