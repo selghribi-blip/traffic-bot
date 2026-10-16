@@ -26,6 +26,7 @@ class BrowserProxyProvider:
     RESIDENTIAL_HOSTS = [
         'resi-ipv4-1.gw.tprx.io',   # TrueProxies
         'pr.oxylabs.io',              # Oxylabs
+        'residentialboson.quantumproxies.io',   # QuantumProxies ← جديد
         'resi.',                      # generic residential prefix
         'residential.',
         'resi-',                      # generic residential
