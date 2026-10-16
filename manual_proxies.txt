@@ -1,14 +1,11 @@
 # manual_proxies.txt
-# =============================================================
-# Mobile Proxy (أضف بروكسي 4G/5G هنا)
-# http://user:pass@mobile-proxy-host:port
 # ============================================================
 # SECTION 1: RESIDENTIAL PROXIES (Priority for Adsterra)
-# These are REAL residential IPs - Ads WILL show
+# Format: http://user:pass@host:port
 # ============================================================
 
-# ---------- TrueProxies - Residential US (SOCKS5) ----------
-socks5h://yfcca4htyf6r-country-us-rotate:q3sqFPxdFk7y28jEsO0q@resi-ipv4-1.gw.tprx.io:1080
+# ---------- TrueProxies - Residential US (HTTP) ----------
+http://bhnuh6ce5ezl-country-us-city-new_york-rotate:9HptEK8hKpEmV7sx36Hv@resi-ipv4-1.gw.tprx.io:1080
 
 # ---------- Oxylabs - Residential (HTTP) ----------
 http://customer-resi_dee21e30-sessid-0072328580-sesstime-10:E9V~Ywy_8hE3@pr.oxylabs.io:7777
@@ -16,7 +13,6 @@ http://resi_cef75b58:4QDHq41b=GGc@pr.oxylabs.io:7777
 
 # ============================================================
 # SECTION 2: PROXYSCRAPE PREMIUM (Datacenter HTTP)
-# Premium but still datacenter - ads may not show
 # ============================================================
 http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.167.19.221:3129
 http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.52.161:3129
@@ -123,6 +119,8 @@ http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.240.214:3129
 # SECTION 3: WEBSHARE (Datacenter - Fallback)
 # Format: ip:port:user:pass
 # ============================================================
+
+# Account 1
 45.38.107.97:6014:uisdhfubfi1:kfbviudsf1
 64.137.96.74:6641:uisdhfubfi1:kfbviudsf1
 198.23.243.226:6361:uisdhfubfi1:kfbviudsf1
@@ -245,7 +243,6 @@ http://0c0cf9lks2x5:cqwtn1qxq9grc2s@216.26.240.214:3129
 # ============================================================
 # SECTION 4: SOCKS5 (Free - HTTPS fallback)
 # ============================================================
-# SOCKS5
 5.255.103.55:1080
 5.255.123.162:1080
 101.36.104.239:10808
