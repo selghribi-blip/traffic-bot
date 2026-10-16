@@ -12,7 +12,7 @@ http://customer-resi_dee21e30-sessid-0072328580-sesstime-10:E9V~Ywy_8hE3@pr.oxyl
 http://resi_cef75b58:4QDHq41b=GGc@pr.oxylabs.io:7777
 
 # ============================================================
-# SECTION 2: PROXYSCRAPE PREMIUM (Datacenter HTTP)
+# SECTION 2: PROXYSCRAPE DATACENTER (NOT residential!)
 # ============================================================
 http://0c0cf9lks2x5:cqwtn1qxq9grc2s@104.167.19.221:3129
 http://0c0cf9lks2x5:cqwtn1qxq9grc2s@45.3.52.161:3129
