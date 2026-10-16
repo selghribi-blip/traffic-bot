@@ -1,12 +1,14 @@
 # utils/browserstack_client.py
-# BrowserStack + Local Chrome client with proxy auth + mobile emulation
+# BrowserStack + Local Chrome with auto Chrome version detection
 import os
+import re
 import time
 import json
 import random
 import logging
 import tempfile
 import zipfile
+import subprocess
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -81,13 +83,40 @@ ANDROID_DEVICES = [
 
 
 # ============================================================
-# Proxy Auth Extension Generator
+# Chrome Version Detection
+# ============================================================
+def detect_chrome_version():
+    """Auto-detect installed Chrome major version."""
+    candidates = [
+        os.environ.get('CHROME_BIN', '/usr/local/bin/google-chrome'),
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/opt/google/chrome/chrome',
+    ]
+    for chrome_bin in candidates:
+        if not os.path.exists(chrome_bin):
+            continue
+        try:
+            result = subprocess.run(
+                [chrome_bin, '--version'],
+                capture_output=True, text=True, timeout=5,
+            )
+            match = re.search(r'(\d+)\.', result.stdout)
+            if match:
+                version = int(match.group(1))
+                logger.info(f"Detected Chrome version: {version} ({chrome_bin})")
+                return version
+        except Exception as e:
+            logger.debug(f"Failed to detect Chrome at {chrome_bin}: {e}")
+    logger.warning("Could not detect Chrome version")
+    return None
+
+
+# ============================================================
+# Proxy Auth Extension
 # ============================================================
 def parse_proxy_url(proxy_url):
-    """
-    Parses http://user:pass@host:port or socks5://user:pass@host:port
-    Returns dict {scheme, host, port, user, pass} or None.
-    """
+    """Parse http://user:pass@host:port → dict."""
     if not proxy_url:
         return None
     try:
@@ -107,40 +136,21 @@ def parse_proxy_url(proxy_url):
         else:
             return None
 
-        return {
-            'scheme': scheme,
-            'host': host,
-            'port': port,
-            'user': user,
-            'pass': pass_,
-        }
+        return {'scheme': scheme, 'host': host, 'port': port, 'user': user, 'pass': pass_}
     except Exception as e:
         logger.error(f"Failed to parse proxy '{proxy_url}': {e}")
         return None
 
 
 def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, scheme='http'):
-    """
-    Creates a Chrome extension zip that handles proxy authentication.
-    Returns path to the .zip file.
-    """
+    """Create Chrome extension for proxy authentication."""
     manifest_json = """
     {
         "version": "1.0.0",
         "manifest_version": 2,
         "name": "Chrome Proxy Auth",
-        "permissions": [
-            "proxy",
-            "tabs",
-            "unlimitedStorage",
-            "storage",
-            "<all_urls>",
-            "webRequest",
-            "webRequestBlocking"
-        ],
-        "background": {
-            "scripts": ["background.js"]
-        },
+        "permissions": ["proxy", "tabs", "unlimitedStorage", "storage", "<all_urls>", "webRequest", "webRequestBlocking"],
+        "background": {"scripts": ["background.js"]},
         "minimum_chrome_version": "22.0.0"
     }
     """
@@ -149,31 +159,15 @@ def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, 
     var config = {
         mode: "fixed_servers",
         rules: {
-            singleProxy: {
-                scheme: "%s",
-                host: "%s",
-                port: parseInt(%s)
-            },
+            singleProxy: {scheme: "%s", host: "%s", port: parseInt(%s)},
             bypassList: ["localhost", "127.0.0.1"]
         }
     };
-
     chrome.proxy.settings.set({value: config, scope: "regular"}, function() {});
-
     function callbackFn(details) {
-        return {
-            authCredentials: {
-                username: "%s",
-                password: "%s"
-            }
-        };
+        return {authCredentials: {username: "%s", password: "%s"}};
     }
-
-    chrome.webRequest.onAuthRequired.addListener(
-        callbackFn,
-        {urls: ["<all_urls>"]},
-        ['blocking']
-    );
+    chrome.webRequest.onAuthRequired.addListener(callbackFn, {urls: ["<all_urls>"]}, ['blocking']);
     """ % (scheme, proxy_host, proxy_port, proxy_user, proxy_pass)
 
     ext_dir = tempfile.mkdtemp(prefix='proxy_auth_ext_')
@@ -207,10 +201,8 @@ class BezierMouse:
         points = []
         for i in range(steps + 1):
             t = i / steps
-            x = ((1 - t) ** 3 * x1 + 3 * (1 - t) ** 2 * t * cx1 +
-                 3 * (1 - t) * t ** 2 * cx2 + t ** 3 * x2)
-            y = ((1 - t) ** 3 * y1 + 3 * (1 - t) ** 2 * t * cy1 +
-                 3 * (1 - t) * t ** 2 * cy2 + t ** 3 * y2)
+            x = ((1 - t) ** 3 * x1 + 3 * (1 - t) ** 2 * t * cx1 + 3 * (1 - t) * t ** 2 * cx2 + t ** 3 * x2)
+            y = ((1 - t) ** 3 * y1 + 3 * (1 - t) ** 2 * t * cy1 + 3 * (1 - t) * t ** 2 * cy2 + t ** 3 * y2)
             points.append((int(x), int(y)))
         return points
 
@@ -221,21 +213,13 @@ class BezierMouse:
 class CDPSpoofer:
     @classmethod
     def apply(cls, driver, fp):
-        """Apply fingerprint with optional mobile emulation via CDP."""
         try:
-            # 1) Timezone
             if fp.get('timezone'):
-                driver.execute_cdp_cmd('Emulation.setTimezoneOverride', {
-                    'timezoneId': fp['timezone'],
-                })
+                driver.execute_cdp_cmd('Emulation.setTimezoneOverride', {'timezoneId': fp['timezone']})
 
-            # 2) Locale
             if fp.get('locale'):
-                driver.execute_cdp_cmd('Emulation.setLocaleOverride', {
-                    'locale': fp['locale'],
-                })
+                driver.execute_cdp_cmd('Emulation.setLocaleOverride', {'locale': fp['locale']})
 
-            # 3) User Agent
             if fp.get('user_agent'):
                 driver.execute_cdp_cmd('Network.setUserAgentOverride', {
                     'userAgent': fp['user_agent'],
@@ -243,35 +227,25 @@ class CDPSpoofer:
                     'acceptLanguage': fp.get('locale', 'en-US'),
                 })
 
-            # 4) Viewport + Mobile Emulation
             if fp.get('viewport'):
                 vw, vh = fp['viewport']
                 is_mobile = fp.get('is_mobile', False)
                 driver.execute_cdp_cmd('Emulation.setDeviceMetricsOverride', {
-                    'width': vw,
-                    'height': vh,
+                    'width': vw, 'height': vh,
                     'deviceScaleFactor': fp.get('device_scale_factor', 1),
                     'mobile': is_mobile,
-                    'screenWidth': vw,
-                    'screenHeight': vh,
+                    'screenWidth': vw, 'screenHeight': vh,
                 })
 
-            # 5) Touch Emulation
             if fp.get('is_mobile'):
                 driver.execute_cdp_cmd('Emulation.setTouchEmulationEnabled', {
                     'enabled': True,
                     'maxTouchPoints': fp.get('max_touch_points', 5),
                 })
 
-            # 6) JS injection
-            driver.execute_cdp_cmd(
-                'Page.addScriptToEvaluateOnNewDocument',
-                {'source': cls._script(fp)},
-            )
+            driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'source': cls._script(fp)})
 
-            device_name = fp.get('device_name', 'Unknown')
-            logger.info(f"CDP spoofed: {device_name} | {fp.get('timezone')} | {fp.get('locale')}")
-
+            logger.info(f"CDP spoofed: {fp.get('device_name', 'Unknown')} | {fp.get('timezone')} | {fp.get('locale')}")
         except Exception as e:
             logger.warning(f"CDP spoofing partial: {e}")
 
@@ -368,13 +342,7 @@ class CDPSpoofer:
 # Resource Blocker
 # ============================================================
 class ResourceBlocker:
-    BLOCK_ALWAYS = [
-        'google-analytics.com',
-        'googletagmanager.com',
-        'facebook.net',
-        'hotjar.com',
-        'clarity.ms',
-    ]
+    BLOCK_ALWAYS = ['google-analytics.com', 'googletagmanager.com', 'facebook.net', 'hotjar.com', 'clarity.ms']
 
     @classmethod
     def setup(cls, driver, mode='balanced'):
@@ -401,10 +369,8 @@ class ResourceBlocker:
 class BrowserStackClient:
     AD_SELECTORS = [
         'ins.adsbygoogle',
-        'iframe[id*="google_ads"]',
         'iframe[src*="doubleclick"]',
         'iframe[src*="googlesyndication"]',
-        '.adsbygoogle',
         'a[href*="adsterra"]',
         'a[href*="monetag"]',
         'a[href*="propellerads"]',
@@ -412,15 +378,9 @@ class BrowserStackClient:
         'a[href*="highperformanceformat"]',
         'a[href*="highrevenueformat"]',
         'a[href*="profitableratecpmnetwork"]',
-        'a[href*="mgid"]',
-        'a[href*="taboola"]',
-        'a[href*="outbrain"]',
-        'div[id^="ad-"]:not(:empty)',
-        'div[class*="advertisement"]:not(:empty)',
-        'div[data-ad-slot]',
-        'div[data-ad-client]',
-        '.ad-banner',
-        '[class*="banner-ad"]',
+        'div[id^="container-"]',
+        'div[id^="ad-"]',
+        'div[class*="advertisement"]',
     ]
 
     FORM_SELECTORS = [
@@ -433,31 +393,19 @@ class BrowserStackClient:
     ]
 
     CAPTCHA_SIGNALS = [
-        'google.com/sorry',
-        'consent.google.com',
-        'captcha',
-        'unusual traffic',
-        'detected unusual',
-        'our systems have detected',
-        'please show you',
-        '/sorry/index',
-        'are you a robot',
+        'google.com/sorry', 'consent.google.com', 'captcha',
+        'unusual traffic', 'detected unusual', 'our systems have detected',
+        'please show you', '/sorry/index', 'are you a robot',
     ]
 
-    DESKTOP_VIEWPORTS = [
-        (1920, 1080), (1366, 768), (1536, 864),
-        (1440, 900), (1600, 900),
-    ]
-
-    LOCALES = ['en-US', 'en-GB', 'fr-FR', 'de-DE', 'es-ES', 'ar-MA', 'fr-MA']
+    DESKTOP_VIEWPORTS = [(1920, 1080), (1366, 768), (1536, 864), (1440, 900), (1600, 900)]
+    LOCALES = ['en-US', 'en-GB', 'fr-FR', 'de-DE', 'es-ES']
     TIMEZONES = {
         'en-US': 'America/New_York',
         'en-GB': 'Europe/London',
         'fr-FR': 'Europe/Paris',
         'de-DE': 'Europe/Berlin',
         'es-ES': 'Europe/Madrid',
-        'ar-MA': 'Africa/Casablanca',   # ← مغربي
-        'fr-MA': 'Africa/Casablanca',   # ← مغربي فرنسي
     }
 
     def __init__(self, username=None, access_key=None):
@@ -467,12 +415,8 @@ class BrowserStackClient:
         self.current_locale = 'en-US'
         self.is_mobile = False
 
-    # ============================================================
-    # Random Fingerprint
-    # ============================================================
     def _random_fp(self, mobile=False):
         locale = random.choice(self.LOCALES)
-
         if mobile:
             device = random.choice(ANDROID_DEVICES)
             return {
@@ -492,28 +436,24 @@ class BrowserStackClient:
                 'device_name': device['name'],
                 'max_touch_points': device['max_touch_points'],
             }
-        else:
-            return {
-                'locale': locale,
-                'timezone': self.TIMEZONES[locale],
-                'platform': 'Win32',
-                'vendor': 'Google Inc.',
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                'viewport': random.choice(self.DESKTOP_VIEWPORTS),
-                'device_scale_factor': 1,
-                'webgl_vendor': 'Google Inc. (NVIDIA)',
-                'webgl_renderer': 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0)',
-                'hardware_concurrency': random.choice([4, 8, 12, 16]),
-                'device_memory': random.choice([4, 8, 16]),
-                'langs': [locale, locale.split('-')[0]],
-                'is_mobile': False,
-                'device_name': 'Desktop',
-                'max_touch_points': 0,
-            }
+        return {
+            'locale': locale,
+            'timezone': self.TIMEZONES[locale],
+            'platform': 'Win32',
+            'vendor': 'Google Inc.',
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'viewport': random.choice(self.DESKTOP_VIEWPORTS),
+            'device_scale_factor': 1,
+            'webgl_vendor': 'Google Inc. (NVIDIA)',
+            'webgl_renderer': 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0)',
+            'hardware_concurrency': random.choice([4, 8, 12, 16]),
+            'device_memory': random.choice([4, 8, 16]),
+            'langs': [locale, locale.split('-')[0]],
+            'is_mobile': False,
+            'device_name': 'Desktop',
+            'max_touch_points': 0,
+        }
 
-    # ============================================================
-    # BrowserStack Session
-    # ============================================================
     def start_session(self, url, browser='chrome', os_name='Windows', os_version='11',
                       proxy=None, use_local=False, fp=None, record_video=False,
                       block_resources='balanced', mobile=False):
@@ -541,7 +481,6 @@ class BrowserStackClient:
             bstack_opts['video'] = True
 
         options.set_capability('bstack:options', bstack_opts)
-
         logger.info(f"BrowserStack: {browser} on {os_name} {os_version} | {fp.get('device_name')}")
 
         self.driver = webdriver.Remote(
@@ -555,7 +494,6 @@ class BrowserStackClient:
         ResourceBlocker.setup(self.driver, mode=block_resources)
 
         self.current_locale = fp.get('locale', 'en-US')
-
         if fp.get('viewport'):
             try:
                 vw, vh = fp['viewport']
@@ -570,27 +508,6 @@ class BrowserStackClient:
     # ============================================================
     # Common Actions
     # ============================================================
-    def click_ads(self, ad_selectors=None, max_clicks=2):
-        selectors = ad_selectors or self.AD_SELECTORS
-        clicked = 0
-        for selector in selectors:
-            if clicked >= max_clicks:
-                break
-            try:
-                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                if not elements:
-                    continue
-                element = random.choice(elements[:5])
-                if not self._safe_click(element):
-                    continue
-                clicked += 1
-                logger.info(f"Clicked ad: {selector}")
-                self.random_sleep(3.0, 7.0)
-                self._close_extra_tabs()
-            except Exception:
-                continue
-        return clicked
-
     def fill_form(self, form_data=None, form_selectors=None):
         selectors = form_selectors or self.FORM_SELECTORS
         filled = 0
@@ -621,12 +538,9 @@ class BrowserStackClient:
         if not filled_any:
             return False
         try:
-            submit = form.find_element(
-                By.CSS_SELECTOR,
-                'button[type="submit"], input[type="submit"]',
-            )
+            submit = form.find_element(By.CSS_SELECTOR, 'button[type="submit"], input[type="submit"]')
             if submit.is_displayed() and submit.is_enabled():
-                self._safe_click(submit)
+                submit.click()
                 self.random_sleep(2.0, 4.0)
                 return True
         except Exception:
@@ -641,7 +555,6 @@ class BrowserStackClient:
                 element.send_keys(Keys.BACKSPACE)
                 time.sleep(random.uniform(0.1, 0.3))
                 element.send_keys(char)
-                time.sleep(random.uniform(min_delay, max_delay))
 
     def bezier_mouse_move(self, target):
         try:
@@ -649,9 +562,7 @@ class BrowserStackClient:
             sz = target.size
             tx = loc['x'] + sz['width'] // 2
             ty = loc['y'] + sz['height'] // 2
-            sx = random.randint(0, 200)
-            sy = random.randint(0, 200)
-            points = BezierMouse.bezier_points(sx, sy, tx, ty, steps=20)
+            points = BezierMouse.bezier_points(0, 0, tx, ty, steps=20)
             body = self.driver.find_element(By.TAG_NAME, 'body')
             actions = ActionChains(self.driver)
             for x, y in points:
@@ -669,20 +580,11 @@ class BrowserStackClient:
         for i in range(count):
             pixels = random.randint(250, 750)
             if i < 2 or i >= count - 1:
-                self.driver.execute_script(
-                    f"window.scrollBy({{top: {pixels}, behavior: 'smooth'}});"
-                )
+                self.driver.execute_script(f"window.scrollBy({{top: {pixels}, behavior: 'smooth'}});")
                 self.random_sleep(1.2, 2.5)
             else:
-                self.driver.execute_script(
-                    f"window.scrollBy({{top: {pixels * 2}, behavior: 'smooth'}});"
-                )
+                self.driver.execute_script(f"window.scrollBy({{top: {pixels * 2}, behavior: 'smooth'}});")
                 self.random_sleep(0.6, 1.2)
-            if random.random() < 0.2:
-                self.driver.execute_script(
-                    f"window.scrollBy({{top: -{random.randint(100, 250)}, behavior: 'smooth'}});"
-                )
-                self.random_sleep(0.5, 1.0)
 
     def random_sleep(self, min_s, max_s):
         time.sleep(random.uniform(min_s, max_s))
@@ -693,8 +595,7 @@ class BrowserStackClient:
                 if not element.is_displayed():
                     return False
                 self.driver.execute_script(
-                    "arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});",
-                    element,
+                    "arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", element
                 )
                 self.random_sleep(0.5, 1.2)
                 try:
@@ -702,9 +603,7 @@ class BrowserStackClient:
                 except ElementClickInterceptedException:
                     self.driver.execute_script("arguments[0].click();", element)
                 return True
-            except StaleElementReferenceException:
-                time.sleep(0.5)
-            except Exception:
+            except (StaleElementReferenceException, Exception):
                 time.sleep(0.5)
         return False
 
@@ -741,26 +640,6 @@ class BrowserStackClient:
                 lambda d: d.execute_script("return document.readyState") == "complete"
             )
         except TimeoutException:
-            pass
-
-    def save_cookies(self, path='cookies.json'):
-        try:
-            with open(path, 'w') as f:
-                json.dump(self.driver.get_cookies(), f)
-        except Exception:
-            pass
-
-    def load_cookies(self, path='cookies.json'):
-        if not os.path.exists(path):
-            return
-        try:
-            with open(path) as f:
-                for c in json.load(f):
-                    try:
-                        self.driver.add_cookie(c)
-                    except Exception:
-                        pass
-        except Exception:
             pass
 
     def _generate_form_data(self):
@@ -811,7 +690,7 @@ class BrowserStackClient:
 
 
 # ============================================================
-# Local Browser Client (with proxy auth + mobile emulation)
+# Local Browser Client — with AUTO Chrome version detection
 # ============================================================
 class LocalBrowserClient(BrowserStackClient):
     """Local Chrome with anti-detection, proxy auth, and mobile emulation."""
@@ -830,13 +709,6 @@ class LocalBrowserClient(BrowserStackClient):
         vw, vh = fp.get('viewport', (412, 915))
         locale = fp.get('locale', 'en-US')
 
-        # ============================================================
-        # NOTE: We do NOT use add_experimental_option('mobileEmulation')
-        # because it breaks undetected-chromedriver.
-        # We rely on CDP spoofing (setDeviceMetricsOverride + setTouchEmulationEnabled)
-        # which is applied AFTER driver creation.
-        # ============================================================
-
         if headless:
             options.add_argument('--headless=new')
 
@@ -853,9 +725,7 @@ class LocalBrowserClient(BrowserStackClient):
         options.add_argument('--log-level=3')
         options.add_argument(f'--user-agent={fp.get("user_agent", "")}')
 
-        # ============================================================
-        # PROXY HANDLING (with authentication)
-        # ============================================================
+        # ---------- PROXY ----------
         if proxy:
             parsed = parse_proxy_url(proxy)
             if parsed:
@@ -868,11 +738,8 @@ class LocalBrowserClient(BrowserStackClient):
                 if user and pass_:
                     try:
                         self._extension_path = create_proxy_auth_extension(
-                            proxy_host=host,
-                            proxy_port=port,
-                            proxy_user=user,
-                            proxy_pass=pass_,
-                            scheme=scheme,
+                            proxy_host=host, proxy_port=port,
+                            proxy_user=user, proxy_pass=pass_, scheme=scheme,
                         )
                         options.add_extension(self._extension_path)
                         logger.info(f"Proxy auth extension loaded: {scheme}://{host}:{port}")
@@ -882,37 +749,36 @@ class LocalBrowserClient(BrowserStackClient):
                 else:
                     options.add_argument(f'--proxy-server={scheme}://{host}:{port}')
                     logger.info(f"Proxy without auth: {scheme}://{host}:{port}")
-            else:
-                logger.warning(f"Could not parse proxy: {proxy}")
 
-        # ============================================================
-        # DRIVER CREATION
-        # ============================================================
+        # ---------- DRIVER CREATION ----------
         driver = None
+        chrome_version = detect_chrome_version()
 
-        # Try undetected-chromedriver with version_main=131
+        # Try undetected-chromedriver with auto-detected version
         try:
             import undetected_chromedriver as uc
-            logger.info("Using undetected-chromedriver (version_main=131)")
+            logger.info(f"Using undetected-chromedriver (detected Chrome: {chrome_version})")
+
             try:
-                driver = uc.Chrome(
-                    options=options,
-                    use_subprocess=True,
-                    version_main=131,
-                )
-                logger.info("undetected-chromedriver started successfully")
-            except TypeError:
-                # Older uc versions don't accept version_main
-                logger.info("version_main not supported, trying default uc.Chrome")
-                try:
+                if chrome_version:
+                    driver = uc.Chrome(
+                        options=options,
+                        use_subprocess=True,
+                        version_main=chrome_version,
+                    )
+                else:
                     driver = uc.Chrome(options=options, use_subprocess=True)
-                    logger.info("undetected-chromedriver started (no version_main)")
-                except Exception as e:
-                    logger.warning(f"uc.Chrome failed: {e}")
-                    driver = None
+                logger.info("undetected-chromedriver started successfully")
             except Exception as e:
-                logger.warning(f"uc.Chrome with version_main failed: {e}")
-                driver = None
+                logger.warning(f"uc.Chrome with version_main={chrome_version} failed: {e}")
+                # Retry without version_main
+                try:
+                    logger.info("Retrying uc.Chrome without version_main")
+                    driver = uc.Chrome(options=options, use_subprocess=True)
+                    logger.info("undetected-chromedriver started (fallback)")
+                except Exception as e2:
+                    logger.warning(f"uc.Chrome fallback failed: {e2}")
+                    driver = None
         except ImportError:
             logger.warning("undetected-chromedriver not installed")
             driver = None
@@ -936,11 +802,10 @@ class LocalBrowserClient(BrowserStackClient):
 
         self.driver = driver
 
-        # Apply anti-detection via CDP
+        # Apply anti-detection
         CDPSpoofer.apply(self.driver, fp)
         ResourceBlocker.setup(self.driver, mode=block_resources)
 
-        # Extra stealth
         try:
             self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
                 'source': '''
@@ -956,9 +821,7 @@ class LocalBrowserClient(BrowserStackClient):
         self.driver.set_page_load_timeout(60)
         self.driver.set_script_timeout(30)
 
-        # ============================================================
-        # PROXY VERIFICATION
-        # ============================================================
+        # Proxy verification
         if proxy:
             try:
                 self.driver.get('http://httpbin.org/ip')
@@ -967,11 +830,10 @@ class LocalBrowserClient(BrowserStackClient):
                     body = self.driver.find_element(By.TAG_NAME, 'body').text
                     logger.info(f"Proxy check: {body[:200]}")
                 except Exception:
-                    logger.info("Proxy check: page loaded (couldn't read body)")
+                    logger.info("Proxy check: page loaded")
             except Exception as e:
                 logger.warning(f"Proxy verification failed: {e}")
 
-        # Navigate to target URL
         self.driver.get(url)
         self.wait_for_page_load(timeout=30)
         return self.driver
