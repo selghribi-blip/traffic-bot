@@ -21,11 +21,11 @@ class BrowserStackSpider(scrapy.Spider):
         'DOWNLOAD_TIMEOUT': 90,
     }
 
+    # NOTE: Firefox removed - does not support CDP anymore
     BROWSERSTACK_BROWSERS = [
         ('chrome', 'Windows', '11'),
         ('chrome', 'Windows', '10'),
         ('chrome', 'OS X', 'Ventura'),
-    #   ('firefox', 'Windows', '11'),
         ('edge', 'Windows', '11'),
     ]
 
@@ -114,7 +114,7 @@ class BrowserStackSpider(scrapy.Spider):
             # 3) Trigger Monetag
             self._trigger_monetag()
 
-            # 4) AGGRESSIVE ad clicking (REAL MOUSE + CDP)
+            # 4) Aggressive ad clicking
             self._click_ads_aggressive()
 
             # 5) Fill forms
@@ -203,7 +203,7 @@ class BrowserStackSpider(scrapy.Spider):
     # CDP-level Real Mouse Click (bypasses isTrusted check)
     # ============================================================
     def _cdp_click_at(self, x, y):
-        """Real browser-level click via CDP. This bypasses event.isTrusted=false."""
+        """Real browser-level click via CDP. Bypasses event.isTrusted=false."""
         try:
             self.client.driver.execute_cdp_cmd('Input.dispatchMouseEvent', {
                 'type': 'mouseMoved',
@@ -288,171 +288,211 @@ class BrowserStackSpider(scrapy.Spider):
             self.logger.debug(f"Monetag trigger failed: {e}")
 
     # ============================================================
-    # NEW: AGGRESSIVE AD CLICKING with REAL MOUSE + CDP
+    # AGGRESSIVE AD CLICKING - IMPROVED with proper attempt counting
     # ============================================================
     def _click_ads_aggressive(self):
         """
-        Multi-layer ad clicking:
-        1) REAL mouse click via ActionChains (containers + iframes)
-        2) CDP Input.dispatchMouseEvent (bypasses isTrusted check)
-        3) JS mass click (fallback)
+        Multi-layer ad clicking with proper fallbacks.
+        Attempts counted BEFORE each try, so we always see real attempts.
         """
         from selenium.webdriver.common.by import By
         from selenium.webdriver.common.action_chains import ActionChains
 
         max_clicks = self.MAX_AD_CLICKS_PER_SESSION
-        self.logger.info(f"Aggressive clicking: up to {max_clicks} clicks (Real Mouse + CDP)")
+        self.logger.info(f"Aggressive clicking: up to {max_clicks} clicks")
 
         clicked = 0
+        containers = []
+        iframes = []
 
         # ============================================================
-        # Strategy 1: Real ActionChains mouse click on Adsterra containers
+        # Collect all ad elements upfront
         # ============================================================
         try:
             containers = self.client.driver.find_elements(
                 By.CSS_SELECTOR, 'div[id^="container-"]'
             )
-            for c in containers[:3]:
-                if clicked >= max_clicks:
-                    break
-                try:
-                    if not c.is_displayed():
-                        continue
-                    self.client.driver.execute_script(
-                        "arguments[0].scrollIntoView({block:'center', behavior:'smooth'});", c
-                    )
-                    time.sleep(random.uniform(0.8, 1.5))
+            self.logger.info(f"Found {len(containers)} containers")
+        except Exception as e:
+            self.logger.debug(f"Container search failed: {e}")
 
-                    # Try ActionChains real mouse click
-                    try:
-                        actions = ActionChains(self.client.driver)
-                        actions.move_to_element(c)
-                        actions.pause(random.uniform(0.2, 0.4))
-                        actions.click(c)
-                        actions.perform()
-                        self.click_attempts += 1
+        try:
+            iframes = self.client.driver.find_elements(
+                By.CSS_SELECTOR,
+                'iframe[src*="highrevenueformat"], '
+                'iframe[src*="effectivecpmnetwork"], '
+                'iframe[src*="highperformanceformat"], '
+                'iframe[src*="profitableratecpmnetwork"]'
+            )
+            self.logger.info(f"Found {len(iframes)} iframes")
+        except Exception as e:
+            self.logger.debug(f"Iframe search failed: {e}")
+
+        # ============================================================
+        # Strategy 1: Real ActionChains click on containers
+        # ============================================================
+        for idx, c in enumerate(containers[:3]):
+            if clicked >= max_clicks:
+                break
+
+            self.click_attempts += 1
+            try:
+                if not c.is_displayed():
+                    self.logger.debug(f"Container {idx} not displayed")
+                    continue
+
+                self.client.driver.execute_script(
+                    "arguments[0].scrollIntoView({block:'center', behavior:'smooth'});", c
+                )
+                time.sleep(random.uniform(0.8, 1.5))
+
+                # Try ActionChains first
+                try:
+                    actions = ActionChains(self.client.driver)
+                    actions.move_to_element(c)
+                    actions.pause(random.uniform(0.2, 0.4))
+                    actions.click(c)
+                    actions.perform()
+                    clicked += 1
+                    self.ads_clicked += 1
+                    self.logger.info(f"[S1] ActionChains click on container-{idx}")
+                    time.sleep(random.uniform(2.0, 4.0))
+                    self._close_extra_tabs()
+                    continue
+                except Exception as e:
+                    self.logger.debug(f"ActionChains failed on container: {e}")
+
+                # Fallback: CDP click on container center
+                try:
+                    rect = self.client.driver.execute_script(
+                        "return arguments[0].getBoundingClientRect();", c
+                    )
+                    cx = rect['left'] + rect['width'] / 2
+                    cy = rect['top'] + rect['height'] / 2
+                    if self._cdp_click_at(cx, cy):
                         clicked += 1
                         self.ads_clicked += 1
-                        self.logger.info(f"Real mouse click: {c.get_attribute('id')}")
+                        self.logger.info(f"[S1] CDP click on container-{idx}")
                         time.sleep(random.uniform(2.0, 4.0))
                         self._close_extra_tabs()
-                    except Exception as e:
-                        self.logger.debug(f"ActionChains click failed: {e}")
                 except Exception as e:
-                    self.logger.debug(f"Container loop error: {e}")
-        except Exception as e:
-            self.logger.debug(f"Container strategy failed: {e}")
+                    self.logger.debug(f"CDP click failed on container: {e}")
 
-        # ============================================================
-        # Strategy 2: Real ActionChains mouse click on Adsterra iframes
-        # ============================================================
-        if clicked < max_clicks:
-            try:
-                iframes = self.client.driver.find_elements(
-                    By.CSS_SELECTOR,
-                    'iframe[src*="highrevenueformat"], '
-                    'iframe[src*="effectivecpmnetwork"], '
-                    'iframe[src*="highperformanceformat"], '
-                    'iframe[src*="profitableratecpmnetwork"]'
-                )
-                for f in iframes[:3]:
-                    if clicked >= max_clicks:
-                        break
-                    try:
-                        if not f.is_displayed():
-                            continue
-                        self.client.driver.execute_script(
-                            "arguments[0].scrollIntoView({block:'center'});", f
-                        )
-                        time.sleep(random.uniform(0.6, 1.2))
-
-                        # Try real mouse click first
-                        click_success = False
-                        try:
-                            actions = ActionChains(self.client.driver)
-                            actions.move_to_element(f)
-                            actions.pause(random.uniform(0.2, 0.4))
-                            actions.click(f)
-                            actions.perform()
-                            click_success = True
-                        except Exception:
-                            pass
-
-                        # If ActionChains failed, try CDP click
-                        if not click_success:
-                            try:
-                                rect = self.client.driver.execute_script(
-                                    "return arguments[0].getBoundingClientRect();", f
-                                )
-                                cx = rect['left'] + rect['width'] / 2
-                                cy = rect['top'] + rect['height'] / 2
-                                click_success = self._cdp_click_at(cx, cy)
-                            except Exception as e:
-                                self.logger.debug(f"CDP iframe click failed: {e}")
-
-                        if click_success:
-                            self.click_attempts += 1
-                            clicked += 1
-                            self.ads_clicked += 1
-                            self.logger.info("Real click on Adsterra iframe")
-                            time.sleep(random.uniform(2.0, 4.0))
-                            self._close_extra_tabs()
-                    except Exception as e:
-                        self.logger.debug(f"Iframe loop error: {e}")
             except Exception as e:
-                self.logger.debug(f"Iframe strategy failed: {e}")
+                self.logger.debug(f"Container {idx} error: {e}")
 
         # ============================================================
-        # Strategy 3: CDP-level click on any ad element (most realistic)
+        # Strategy 2: Real click on iframes
         # ============================================================
-        if clicked < max_clicks:
+        for idx, f in enumerate(iframes[:3]):
+            if clicked >= max_clicks:
+                break
+
+            self.click_attempts += 1
             try:
-                # Get coordinates of first visible ad element
+                if not f.is_displayed():
+                    continue
+
+                self.client.driver.execute_script(
+                    "arguments[0].scrollIntoView({block:'center'});", f
+                )
+                time.sleep(random.uniform(0.6, 1.2))
+
+                # Try ActionChains
+                try:
+                    actions = ActionChains(self.client.driver)
+                    actions.move_to_element(f)
+                    actions.pause(random.uniform(0.2, 0.4))
+                    actions.click(f)
+                    actions.perform()
+                    clicked += 1
+                    self.ads_clicked += 1
+                    self.logger.info(f"[S2] ActionChains click on iframe-{idx}")
+                    time.sleep(random.uniform(2.0, 4.0))
+                    self._close_extra_tabs()
+                    continue
+                except Exception as e:
+                    self.logger.debug(f"ActionChains failed on iframe: {e}")
+
+                # Fallback: CDP click
+                try:
+                    rect = self.client.driver.execute_script(
+                        "return arguments[0].getBoundingClientRect();", f
+                    )
+                    cx = rect['left'] + rect['width'] / 2
+                    cy = rect['top'] + rect['height'] / 2
+                    if self._cdp_click_at(cx, cy):
+                        clicked += 1
+                        self.ads_clicked += 1
+                        self.logger.info(f"[S2] CDP click on iframe-{idx}")
+                        time.sleep(random.uniform(2.0, 4.0))
+                        self._close_extra_tabs()
+                except Exception as e:
+                    self.logger.debug(f"CDP click failed on iframe: {e}")
+
+            except Exception as e:
+                self.logger.debug(f"Iframe {idx} error: {e}")
+
+        # ============================================================
+        # Strategy 3: CDP click on any ad-like element (loop)
+        # ============================================================
+        safety_counter = 0
+        while clicked < max_clicks and safety_counter < 10:
+            safety_counter += 1
+            self.click_attempts += 1
+            try:
                 pos = self.client.driver.execute_script("""
                     (() => {
                         const sels = [
-                            'div[id^="container-"]',
                             'ins.adsbygoogle',
+                            'div[id^="container-"]',
                             'iframe[src*="highrevenueformat"]',
                             'iframe[src*="effectivecpmnetwork"]',
                             'iframe[src*="highperformanceformat"]',
                         ];
+                        const all = [];
                         for (const sel of sels) {
-                            const els = document.querySelectorAll(sel);
-                            for (const el of els) {
+                            document.querySelectorAll(sel).forEach(el => {
                                 const rect = el.getBoundingClientRect();
                                 if (rect.width >= 50 && rect.height >= 30 &&
                                     rect.top >= 0 && rect.top <= window.innerHeight) {
-                                    return {
+                                    all.push({
                                         x: rect.left + rect.width / 2,
                                         y: rect.top + rect.height / 2,
-                                        tag: el.tagName,
-                                        id: el.id || ''
-                                    };
+                                        tag: el.tagName
+                                    });
                                 }
-                            }
+                            });
                         }
-                        return null;
+                        if (all.length === 0) return null;
+                        return all[Math.floor(Math.random() * all.length)];
                     })();
                 """)
 
-                if pos:
-                    if self._cdp_click_at(pos['x'], pos['y']):
-                        self.click_attempts += 1
-                        clicked += 1
-                        self.ads_clicked += 1
-                        self.logger.info(
-                            f"CDP click at ({int(pos['x'])}, {int(pos['y'])}) on {pos['tag']}"
-                        )
-                        time.sleep(random.uniform(2.0, 4.0))
-                        self._close_extra_tabs()
+                if not pos:
+                    self.logger.debug("No visible ad element for CDP")
+                    break
+
+                if self._cdp_click_at(pos['x'], pos['y']):
+                    clicked += 1
+                    self.ads_clicked += 1
+                    self.logger.info(
+                        f"[S3] CDP click at ({int(pos['x'])}, {int(pos['y'])}) on {pos['tag']}"
+                    )
+                    time.sleep(random.uniform(2.0, 4.0))
+                    self._close_extra_tabs()
+                else:
+                    time.sleep(1.0)
+
             except Exception as e:
-                self.logger.debug(f"CDP strategy failed: {e}")
+                self.logger.debug(f"CDP strategy error: {e}")
+                break
 
         # ============================================================
         # Strategy 4: JS mass click (fallback)
         # ============================================================
         if clicked < max_clicks:
+            self.click_attempts += 1
             try:
                 js_mass = """
                 (() => {
@@ -491,12 +531,11 @@ class BrowserStackSpider(scrapy.Spider):
                     return total;
                 })();
                 """
-                self.click_attempts += 1
                 result = self.client.driver.execute_script(js_mass)
                 if result and result > 0:
                     clicked += 1
                     self.ads_clicked += 1
-                    self.logger.info(f"JS mass click: {result} elements")
+                    self.logger.info(f"[S4] JS mass click: {result} elements")
                     time.sleep(random.uniform(2.0, 4.0))
                     self._close_extra_tabs()
             except Exception as e:
@@ -606,7 +645,7 @@ class BrowserStackSpider(scrapy.Spider):
             pass
 
     # ============================================================
-    # NEW: DWELL with periodic real clicks
+    # DWELL with periodic real clicks
     # ============================================================
     def _dwell(self):
         from selenium.webdriver.common.by import By
