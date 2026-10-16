@@ -221,7 +221,7 @@ class BezierMouse:
 class CDPSpoofer:
     @classmethod
     def apply(cls, driver, fp):
-        """Apply fingerprint with optional mobile emulation."""
+        """Apply fingerprint with optional mobile emulation via CDP."""
         try:
             # 1) Timezone
             if fp.get('timezone'):
@@ -829,12 +829,12 @@ class LocalBrowserClient(BrowserStackClient):
         locale = fp.get('locale', 'en-US')
 
         # ============================================================
-        # Mobile emulation:
-        # DON'T use add_experimental_option('mobileEmulation') —
-        # it breaks undetected-chromedriver.
+        # NOTE: We do NOT use add_experimental_option('mobileEmulation')
+        # because it breaks undetected-chromedriver.
         # We rely on CDP spoofing (setDeviceMetricsOverride + setTouchEmulationEnabled)
-        # applied AFTER driver is created, which works with uc.Chrome.
+        # which is applied AFTER driver creation.
         # ============================================================
+
         if headless:
             options.add_argument('--headless=new')
 
@@ -864,7 +864,6 @@ class LocalBrowserClient(BrowserStackClient):
                 scheme = parsed['scheme']
 
                 if user and pass_:
-                    # Use Chrome Extension for authenticated proxy
                     try:
                         self._extension_path = create_proxy_auth_extension(
                             proxy_host=host,
@@ -879,7 +878,6 @@ class LocalBrowserClient(BrowserStackClient):
                         logger.warning(f"Extension failed: {e}. Trying direct --proxy-server")
                         options.add_argument(f'--proxy-server={scheme}://{host}:{port}')
                 else:
-                    # No credentials - direct proxy-server
                     options.add_argument(f'--proxy-server={scheme}://{host}:{port}')
                     logger.info(f"Proxy without auth: {scheme}://{host}:{port}")
             else:
@@ -889,13 +887,37 @@ class LocalBrowserClient(BrowserStackClient):
         # DRIVER CREATION
         # ============================================================
         driver = None
+
+        # Try undetected-chromedriver with version_main=131
         try:
             import undetected_chromedriver as uc
-            logger.info("Using undetected-chromedriver")
-            driver = uc.Chrome(options=options, use_subprocess=True)
-        except Exception as e:
-            logger.warning(f"uc.Chrome failed: {e}. Using plain Chrome")
+            logger.info("Using undetected-chromedriver (version_main=131)")
+            try:
+                driver = uc.Chrome(
+                    options=options,
+                    use_subprocess=True,
+                    version_main=131,
+                )
+                logger.info("undetected-chromedriver started successfully")
+            except TypeError:
+                # Older uc versions don't accept version_main
+                logger.info("version_main not supported, trying default uc.Chrome")
+                try:
+                    driver = uc.Chrome(options=options, use_subprocess=True)
+                    logger.info("undetected-chromedriver started (no version_main)")
+                except Exception as e:
+                    logger.warning(f"uc.Chrome failed: {e}")
+                    driver = None
+            except Exception as e:
+                logger.warning(f"uc.Chrome with version_main failed: {e}")
+                driver = None
+        except ImportError:
+            logger.warning("undetected-chromedriver not installed")
+            driver = None
 
+        # Fallback: plain Chrome with system ChromeDriver
+        if driver is None:
+            logger.info("Using plain Chrome with system ChromeDriver")
             chrome_bin = os.environ.get('CHROME_BIN', '/usr/local/bin/google-chrome')
             if os.path.exists(chrome_bin):
                 options.binary_location = chrome_bin
@@ -912,7 +934,7 @@ class LocalBrowserClient(BrowserStackClient):
 
         self.driver = driver
 
-        # Apply anti-detection
+        # Apply anti-detection via CDP
         CDPSpoofer.apply(self.driver, fp)
         ResourceBlocker.setup(self.driver, mode=block_resources)
 
