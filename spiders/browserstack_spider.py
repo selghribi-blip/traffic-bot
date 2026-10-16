@@ -1,5 +1,5 @@
 # spiders/browserstack_spider.py
-# Advanced Adsterra + Monetag with Android mobile emulation
+# Advanced Adsterra + Monetag with REAL mouse clicks + CDP clicks
 import os
 import random
 import time
@@ -25,12 +25,14 @@ class BrowserStackSpider(scrapy.Spider):
         ('chrome', 'Windows', '11'),
         ('chrome', 'Windows', '10'),
         ('chrome', 'OS X', 'Ventura'),
+        ('firefox', 'Windows', '11'),
+        ('edge', 'Windows', '11'),
     ]
 
     # ============================================================
-    # Mobile-first settings for Adsterra
+    # Aggressive settings
     # ============================================================
-    USE_MOBILE = True              # ← تفعيل محاكاة الأندرويد
+    USE_MOBILE = True
     AD_CLICK_PROBABILITY = 1.0
     MAX_AD_CLICKS_PER_SESSION = 5
     DWELL_TIME_MIN = 90
@@ -40,6 +42,7 @@ class BrowserStackSpider(scrapy.Spider):
     SCROLL_MIN = 8
     SCROLL_MAX = 15
     ADS_WAIT_MAX = 40
+    CLICK_DURING_DWELL_INTERVAL = 6
 
     def __init__(self, target_url=None, use_browserstack='true', *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -111,7 +114,7 @@ class BrowserStackSpider(scrapy.Spider):
             # 3) Trigger Monetag
             self._trigger_monetag()
 
-            # 4) Aggressive ad clicking
+            # 4) AGGRESSIVE ad clicking (REAL MOUSE + CDP)
             self._click_ads_aggressive()
 
             # 5) Fill forms
@@ -120,7 +123,7 @@ class BrowserStackSpider(scrapy.Spider):
             # 6) Internal links
             self._click_internal_links()
 
-            # 7) Dwell
+            # 7) Dwell (with periodic clicks)
             self._dwell()
 
             try:
@@ -130,11 +133,10 @@ class BrowserStackSpider(scrapy.Spider):
                 pass
 
             status = 'success'
-            device_info = getattr(self.client, 'is_mobile', False)
             self.logger.info(
                 f"Visit successful | ads={self.ads_clicked} "
                 f"attempts={self.click_attempts} detected={self.ads_detected_in_dom} "
-                f"mobile={device_info} dwell={self.dwell_time}s"
+                f"mobile={getattr(self.client, 'is_mobile', False)} dwell={self.dwell_time}s"
             )
 
         except Exception as e:
@@ -169,28 +171,27 @@ class BrowserStackSpider(scrapy.Spider):
         }
 
     # ============================================================
-    # Human-like mouse movement (for mobile: touch simulation)
+    # Human-like mouse movement
     # ============================================================
     def _human_mouse_move(self, target_element):
         from selenium.webdriver.common.action_chains import ActionChains
         try:
             if getattr(self.client, 'is_mobile', False):
-                # Mobile: use touch actions
                 from selenium.webdriver.common.actions.action_builder import ActionBuilder
                 from selenium.webdriver.common.actions.pointer_input import PointerInput
                 from selenium.webdriver.common.actions import interaction
-
                 touch = PointerInput(interaction.POINTER_TOUCH, "touch")
                 actions = ActionBuilder(self.client.driver, mouse=touch)
                 actions.pointer_action.move_to(target_element)
                 actions.pointer_action.pointer_down()
-                actions.pointer_action.pause(random.uniform(0.1, 0.3))
+                actions.pointer_action.pause(random.uniform(0.05, 0.15))
                 actions.pointer_action.pointer_up()
                 actions.perform()
             else:
-                # Desktop: use mouse
                 actions = ActionChains(self.client.driver)
-                actions.move_to_element_with_offset(target_element, random.randint(-10, 10), random.randint(-10, 10))
+                actions.move_to_element_with_offset(
+                    target_element, random.randint(-10, 10), random.randint(-10, 10)
+                )
                 actions.pause(random.uniform(0.2, 0.5))
                 actions.move_to_element(target_element)
                 actions.perform()
@@ -199,7 +200,35 @@ class BrowserStackSpider(scrapy.Spider):
             self.logger.debug(f"Human mouse move failed: {e}")
 
     # ============================================================
-    # The rest of the functions remain the same as previous version
+    # CDP-level Real Mouse Click (bypasses isTrusted check)
+    # ============================================================
+    def _cdp_click_at(self, x, y):
+        """Real browser-level click via CDP. This bypasses event.isTrusted=false."""
+        try:
+            self.client.driver.execute_cdp_cmd('Input.dispatchMouseEvent', {
+                'type': 'mouseMoved',
+                'x': int(x), 'y': int(y),
+                'button': 'none', 'clickCount': 0,
+            })
+            time.sleep(random.uniform(0.05, 0.15))
+            self.client.driver.execute_cdp_cmd('Input.dispatchMouseEvent', {
+                'type': 'mousePressed',
+                'x': int(x), 'y': int(y),
+                'button': 'left', 'clickCount': 1,
+            })
+            time.sleep(random.uniform(0.05, 0.12))
+            self.client.driver.execute_cdp_cmd('Input.dispatchMouseEvent', {
+                'type': 'mouseReleased',
+                'x': int(x), 'y': int(y),
+                'button': 'left', 'clickCount': 1,
+            })
+            return True
+        except Exception as e:
+            self.logger.debug(f"CDP click failed: {e}")
+            return False
+
+    # ============================================================
+    # WAIT FOR ADS
     # ============================================================
     def _wait_for_ads(self):
         from selenium.webdriver.common.by import By
@@ -234,6 +263,9 @@ class BrowserStackSpider(scrapy.Spider):
         self.logger.warning(f"No ads found after {self.ADS_WAIT_MAX}s polling")
         return False
 
+    # ============================================================
+    # TRIGGER MONETAG
+    # ============================================================
     def _trigger_monetag(self):
         try:
             self.client.driver.execute_script("""
@@ -255,233 +287,224 @@ class BrowserStackSpider(scrapy.Spider):
         except Exception as e:
             self.logger.debug(f"Monetag trigger failed: {e}")
 
+    # ============================================================
+    # NEW: AGGRESSIVE AD CLICKING with REAL MOUSE + CDP
+    # ============================================================
     def _click_ads_aggressive(self):
+        """
+        Multi-layer ad clicking:
+        1) REAL mouse click via ActionChains (containers + iframes)
+        2) CDP Input.dispatchMouseEvent (bypasses isTrusted check)
+        3) JS mass click (fallback)
+        """
         from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.action_chains import ActionChains
+
         max_clicks = self.MAX_AD_CLICKS_PER_SESSION
-        self.logger.info(f"Aggressive ad clicking: up to {max_clicks} clicks")
+        self.logger.info(f"Aggressive clicking: up to {max_clicks} clicks (Real Mouse + CDP)")
+
         clicked = 0
 
-        # [JS scripts remain the same - included for brevity]
-        js_native = """
-        (() => {
-            const containers = document.querySelectorAll('[id^="container-"]');
-            if (containers.length === 0) return null;
-            const c = containers[Math.floor(Math.random() * containers.length)];
-            c.scrollIntoView({block: 'center', behavior: 'smooth'});
-            const rect = c.getBoundingClientRect();
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            const targets = [
-                document.elementFromPoint(x, y),
-                c.querySelector('iframe'),
-                c.querySelector('a'),
-                c.firstElementChild,
-                c,
-            ].filter(t => t);
-            for (const t of targets) {
-                ['mousedown','mouseup','click'].forEach(evt => {
-                    t.dispatchEvent(new MouseEvent(evt, {
-                        bubbles: true, cancelable: true, view: window,
-                        clientX: x, clientY: y, button: 0
-                    }));
-                });
-                try { t.click(); } catch(e) {}
-            }
-            return 'native-' + c.id;
-        })();
-        """
-        js_banners = """
-        (() => {
-            const iframes = document.querySelectorAll('iframe');
-            const banners = [];
-            for (const f of iframes) {
-                const src = (f.src || '').toLowerCase();
-                if (src.includes('highrevenueformat') ||
-                    src.includes('profitableratecpmnetwork') ||
-                    src.includes('effectivecpmnetwork') ||
-                    src.includes('highperformanceformat')) {
-                    banners.push(f);
-                }
-            }
-            if (banners.length === 0) return null;
-            const b = banners[Math.floor(Math.random() * banners.length)];
-            b.scrollIntoView({block: 'center', behavior: 'smooth'});
-            const rect = b.getBoundingClientRect();
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            ['mousedown','mouseup','click'].forEach(evt => {
-                b.dispatchEvent(new MouseEvent(evt, {
-                    bubbles: true, cancelable: true, view: window,
-                    clientX: x, clientY: y, button: 0
-                }));
-            });
-            try { b.click(); } catch(e) {}
-            const el = document.elementFromPoint(x, y);
-            if (el && el !== b) {
-                try { el.click(); } catch(e) {}
-            }
-            return 'banner';
-        })();
-        """
-        js_adsense = """
-        (() => {
-            const ins = document.querySelectorAll('ins.adsbygoogle');
-            if (ins.length === 0) return null;
-            const ad = ins[Math.floor(Math.random() * ins.length)];
-            ad.scrollIntoView({block: 'center', behavior: 'smooth'});
-            const rect = ad.getBoundingClientRect();
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            const targets = [
-                ad.querySelector('iframe'),
-                document.elementFromPoint(x, y),
-                ad,
-            ].filter(t => t);
-            for (const t of targets) {
-                ['mousedown','mouseup','click'].forEach(evt => {
-                    t.dispatchEvent(new MouseEvent(evt, {
-                        bubbles: true, cancelable: true, view: window,
-                        clientX: x, clientY: y, button: 0
-                    }));
-                });
-                try { t.click(); } catch(e) {}
-            }
-            return 'adsense';
-        })();
-        """
-        js_any_iframe = """
-        (() => {
-            const iframes = Array.from(document.querySelectorAll('iframe')).filter(f => {
-                const rect = f.getBoundingClientRect();
-                return rect.width >= 50 && rect.height >= 30 &&
-                       rect.width <= 900 && rect.height <= 800;
-            });
-            if (iframes.length === 0) return null;
-            const b = iframes[Math.floor(Math.random() * iframes.length)];
-            b.scrollIntoView({block: 'center'});
-            const rect = b.getBoundingClientRect();
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            ['mousedown','mouseup','click'].forEach(evt => {
-                b.dispatchEvent(new MouseEvent(evt, {
-                    bubbles: true, cancelable: true, view: window,
-                    clientX: x, clientY: y, button: 0
-                }));
-            });
-            try { b.click(); } catch(e) {}
-            return 'iframe';
-        })();
-        """
-        js_any_ad = """
-        (() => {
-            const all = document.querySelectorAll('[class*="ad"],[id*="ad"],[class*="banner"],[class*="sponsor"]');
-            if (all.length === 0) return null;
-            const el = all[Math.floor(Math.random() * all.length)];
-            const rect = el.getBoundingClientRect();
-            if (rect.width < 100 || rect.height < 30) return null;
-            el.scrollIntoView({block: 'center'});
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            ['mousedown','mouseup','click'].forEach(evt => {
-                el.dispatchEvent(new MouseEvent(evt, {
-                    bubbles: true, cancelable: true, view: window,
-                    clientX: x, clientY: y, button: 0
-                }));
-            });
-            try { el.click(); } catch(e) {}
-            return 'generic-ad';
-        })();
-        """
-        js_body_click = """
-        (() => {
-            const x = window.innerWidth / 2;
-            const y = window.innerHeight / 2;
-            const el = document.elementFromPoint(x, y) || document.body;
-            ['mousedown','mouseup','click'].forEach(evt => {
-                el.dispatchEvent(new MouseEvent(evt, {
-                    bubbles: true, cancelable: true, view: window,
-                    clientX: x, clientY: y, button: 0
-                }));
-            });
-            try { el.click(); } catch(e) {}
-            return 'body-center';
-        })();
-        """
-        js_mass_click = """
-        (() => {
-            const selectors = [
-                'ins.adsbygoogle',
-                'div[id^="container-"]',
-                'iframe[src*="adsterra"]',
-                'iframe[src*="monetag"]',
-                'a[href*="adsterra"]',
-                'a[href*="monetag"]',
-                'a[href*="profitablerate"]',
-                'a[href*="highrevenueformat"]',
-            ];
-            let clicked = 0;
-            for (const sel of selectors) {
-                const elements = document.querySelectorAll(sel);
-                elements.forEach(el => {
-                    try {
-                        el.click();
-                        clicked++;
-                    } catch(e) {}
-                });
-            }
-            return clicked > 0 ? 'mass-' + clicked : null;
-        })();
-        """
-
-        strategies = [
-            ('native', js_native),
-            ('banners', js_banners),
-            ('adsense', js_adsense),
-            ('any_iframe', js_any_iframe),
-            ('any_ad', js_any_ad),
-            ('body_click', js_body_click),
-            ('mass_click', js_mass_click),
-        ]
-
-        for round_num in range(3):
-            if clicked >= max_clicks:
-                break
-            random.shuffle(strategies)
-            for strategy_name, script_code in strategies:
+        # ============================================================
+        # Strategy 1: Real ActionChains mouse click on Adsterra containers
+        # ============================================================
+        try:
+            containers = self.client.driver.find_elements(
+                By.CSS_SELECTOR, 'div[id^="container-"]'
+            )
+            for c in containers[:3]:
                 if clicked >= max_clicks:
                     break
-                self.click_attempts += 1
                 try:
-                    if strategy_name in ['native', 'banners', 'adsense']:
-                        try:
-                            if strategy_name == 'native':
-                                el = self.client.driver.find_element(By.CSS_SELECTOR, '[id^="container-"]')
-                            elif strategy_name == 'banners':
-                                el = self.client.driver.find_element(By.CSS_SELECTOR, 'iframe[src*="highrevenueformat"], iframe[src*="effectivecpmnetwork"]')
-                            else:
-                                el = self.client.driver.find_element(By.CSS_SELECTOR, 'ins.adsbygoogle')
-                            self._human_mouse_move(el)
-                        except Exception:
-                            pass
-                    result = self.client.driver.execute_script(script_code)
-                    if result:
+                    if not c.is_displayed():
+                        continue
+                    self.client.driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center', behavior:'smooth'});", c
+                    )
+                    time.sleep(random.uniform(0.8, 1.5))
+
+                    # Try ActionChains real mouse click
+                    try:
+                        actions = ActionChains(self.client.driver)
+                        actions.move_to_element(c)
+                        actions.pause(random.uniform(0.2, 0.4))
+                        actions.click(c)
+                        actions.perform()
+                        self.click_attempts += 1
                         clicked += 1
                         self.ads_clicked += 1
-                        self.logger.info(f"[Round {round_num+1}] Clicked via {strategy_name}: {result}")
-                        time.sleep(random.uniform(3.0, 6.0))
-                        self._close_extra_tabs()
+                        self.logger.info(f"Real mouse click: {c.get_attribute('id')}")
                         time.sleep(random.uniform(2.0, 4.0))
+                        self._close_extra_tabs()
+                    except Exception as e:
+                        self.logger.debug(f"ActionChains click failed: {e}")
+                except Exception as e:
+                    self.logger.debug(f"Container loop error: {e}")
+        except Exception as e:
+            self.logger.debug(f"Container strategy failed: {e}")
+
+        # ============================================================
+        # Strategy 2: Real ActionChains mouse click on Adsterra iframes
+        # ============================================================
+        if clicked < max_clicks:
+            try:
+                iframes = self.client.driver.find_elements(
+                    By.CSS_SELECTOR,
+                    'iframe[src*="highrevenueformat"], '
+                    'iframe[src*="effectivecpmnetwork"], '
+                    'iframe[src*="highperformanceformat"], '
+                    'iframe[src*="profitableratecpmnetwork"]'
+                )
+                for f in iframes[:3]:
+                    if clicked >= max_clicks:
+                        break
+                    try:
+                        if not f.is_displayed():
+                            continue
+                        self.client.driver.execute_script(
+                            "arguments[0].scrollIntoView({block:'center'});", f
+                        )
+                        time.sleep(random.uniform(0.6, 1.2))
+
+                        # Try real mouse click first
+                        click_success = False
                         try:
-                            self.client.driver.execute_script(
-                                "window.scrollBy({top: 400, behavior: 'smooth'});"
-                            )
+                            actions = ActionChains(self.client.driver)
+                            actions.move_to_element(f)
+                            actions.pause(random.uniform(0.2, 0.4))
+                            actions.click(f)
+                            actions.perform()
+                            click_success = True
                         except Exception:
                             pass
-                        time.sleep(random.uniform(1.5, 3.0))
-                except Exception as e:
-                    self.logger.debug(f"[Round {round_num+1}] {strategy_name} failed: {e}")
 
-        self.logger.info(f"Total clicks: {clicked} | Attempts: {self.click_attempts}")
+                        # If ActionChains failed, try CDP click
+                        if not click_success:
+                            try:
+                                rect = self.client.driver.execute_script(
+                                    "return arguments[0].getBoundingClientRect();", f
+                                )
+                                cx = rect['left'] + rect['width'] / 2
+                                cy = rect['top'] + rect['height'] / 2
+                                click_success = self._cdp_click_at(cx, cy)
+                            except Exception as e:
+                                self.logger.debug(f"CDP iframe click failed: {e}")
+
+                        if click_success:
+                            self.click_attempts += 1
+                            clicked += 1
+                            self.ads_clicked += 1
+                            self.logger.info("Real click on Adsterra iframe")
+                            time.sleep(random.uniform(2.0, 4.0))
+                            self._close_extra_tabs()
+                    except Exception as e:
+                        self.logger.debug(f"Iframe loop error: {e}")
+            except Exception as e:
+                self.logger.debug(f"Iframe strategy failed: {e}")
+
+        # ============================================================
+        # Strategy 3: CDP-level click on any ad element (most realistic)
+        # ============================================================
+        if clicked < max_clicks:
+            try:
+                # Get coordinates of first visible ad element
+                pos = self.client.driver.execute_script("""
+                    (() => {
+                        const sels = [
+                            'div[id^="container-"]',
+                            'ins.adsbygoogle',
+                            'iframe[src*="highrevenueformat"]',
+                            'iframe[src*="effectivecpmnetwork"]',
+                            'iframe[src*="highperformanceformat"]',
+                        ];
+                        for (const sel of sels) {
+                            const els = document.querySelectorAll(sel);
+                            for (const el of els) {
+                                const rect = el.getBoundingClientRect();
+                                if (rect.width >= 50 && rect.height >= 30 &&
+                                    rect.top >= 0 && rect.top <= window.innerHeight) {
+                                    return {
+                                        x: rect.left + rect.width / 2,
+                                        y: rect.top + rect.height / 2,
+                                        tag: el.tagName,
+                                        id: el.id || ''
+                                    };
+                                }
+                            }
+                        }
+                        return null;
+                    })();
+                """)
+
+                if pos:
+                    if self._cdp_click_at(pos['x'], pos['y']):
+                        self.click_attempts += 1
+                        clicked += 1
+                        self.ads_clicked += 1
+                        self.logger.info(
+                            f"CDP click at ({int(pos['x'])}, {int(pos['y'])}) on {pos['tag']}"
+                        )
+                        time.sleep(random.uniform(2.0, 4.0))
+                        self._close_extra_tabs()
+            except Exception as e:
+                self.logger.debug(f"CDP strategy failed: {e}")
+
+        # ============================================================
+        # Strategy 4: JS mass click (fallback)
+        # ============================================================
+        if clicked < max_clicks:
+            try:
+                js_mass = """
+                (() => {
+                    const containers = document.querySelectorAll(
+                        'div[id^="container-"], ins.adsbygoogle'
+                    );
+                    let total = 0;
+                    containers.forEach(c => {
+                        const rect = c.getBoundingClientRect();
+                        if (rect.width < 50 || rect.height < 30) return;
+                        c.scrollIntoView({block: 'center'});
+                        const x = rect.left + rect.width / 2;
+                        const y = rect.top + rect.height / 2;
+                        const targets = [
+                            document.elementFromPoint(x, y),
+                            c.querySelector('iframe'),
+                            c.querySelector('a'),
+                            c.firstElementChild,
+                            c,
+                        ].filter(t => t);
+                        targets.forEach(t => {
+                            ['pointerdown','mousedown','pointerup','mouseup','click'].forEach(evt => {
+                                t.dispatchEvent(new PointerEvent(evt, {
+                                    bubbles: true, cancelable: true, view: window,
+                                    clientX: x, clientY: y, button: 0,
+                                    pointerType: 'touch', isPrimary: true
+                                }));
+                                t.dispatchEvent(new MouseEvent(evt, {
+                                    bubbles: true, cancelable: true, view: window,
+                                    clientX: x, clientY: y, button: 0
+                                }));
+                            });
+                            try { t.click(); total++; } catch(e) {}
+                        });
+                    });
+                    return total;
+                })();
+                """
+                self.click_attempts += 1
+                result = self.client.driver.execute_script(js_mass)
+                if result and result > 0:
+                    clicked += 1
+                    self.ads_clicked += 1
+                    self.logger.info(f"JS mass click: {result} elements")
+                    time.sleep(random.uniform(2.0, 4.0))
+                    self._close_extra_tabs()
+            except Exception as e:
+                self.logger.debug(f"JS mass click failed: {e}")
+
+        self.logger.info(
+            f"Total clicks: {clicked} | Attempts: {self.click_attempts}"
+        )
 
     def _close_extra_tabs(self):
         try:
@@ -489,19 +512,28 @@ class BrowserStackSpider(scrapy.Spider):
             if len(handles) > 1:
                 main = handles[0]
                 for handle in handles[1:]:
-                    self.client.driver.switch_to.window(handle)
-                    time.sleep(random.uniform(2.0, 4.0))
                     try:
-                        self.client.driver.execute_script("window.scrollBy(0, 300);")
-                        time.sleep(1.5)
+                        self.client.driver.switch_to.window(handle)
+                        time.sleep(random.uniform(1.5, 3.0))
+                        try:
+                            self.client.driver.execute_script("window.scrollBy(0, 400);")
+                            time.sleep(1.0)
+                        except Exception:
+                            pass
+                        self.client.driver.close()
                     except Exception:
-                        pass
-                    self.client.driver.close()
-                self.client.driver.switch_to.window(main)
+                        continue
+                try:
+                    self.client.driver.switch_to.window(main)
+                except Exception:
+                    pass
                 self.logger.info(f"Closed {len(handles) - 1} extra tabs")
         except Exception as e:
             self.logger.debug(f"Tab close error: {e}")
 
+    # ============================================================
+    # SCROLL
+    # ============================================================
     def _random_scroll(self):
         try:
             count = random.randint(self.SCROLL_MIN, self.SCROLL_MAX)
@@ -520,6 +552,9 @@ class BrowserStackSpider(scrapy.Spider):
         except Exception:
             pass
 
+    # ============================================================
+    # INTERNAL LINKS
+    # ============================================================
     def _click_internal_links(self):
         from selenium.webdriver.common.by import By
         try:
@@ -546,6 +581,7 @@ class BrowserStackSpider(scrapy.Spider):
                     href = link.get_attribute('href') or ''
                     if not href or href.startswith('#') or 'forjo.tech' not in href:
                         continue
+
                     self._human_mouse_move(link)
                     self.client.driver.execute_script(
                         "arguments[0].scrollIntoView({block: 'center'});", link
@@ -553,17 +589,13 @@ class BrowserStackSpider(scrapy.Spider):
                     time.sleep(random.uniform(0.8, 1.5))
                     link.click()
                     time.sleep(random.uniform(4.0, 8.0))
+
                     self.client.driver.execute_script("window.scrollBy(0, 500);")
-                    time.sleep(random.uniform(3.0, 6.0))
-                    self.client.driver.execute_script("""
-                        (() => {
-                            const iframes = document.querySelectorAll('iframe');
-                            for (const f of iframes) {
-                                try { f.click(); } catch(e) {}
-                            }
-                        })();
-                    """)
-                    time.sleep(2.0)
+                    time.sleep(random.uniform(2.0, 4.0))
+
+                    # Click ads on new page
+                    self._click_ads_aggressive()
+
                     clicked += 1
                     self.internal_clicks += 1
                     self.client.driver.back()
@@ -573,39 +605,64 @@ class BrowserStackSpider(scrapy.Spider):
         except Exception:
             pass
 
+    # ============================================================
+    # NEW: DWELL with periodic real clicks
+    # ============================================================
     def _dwell(self):
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.action_chains import ActionChains
+
         try:
             duration = random.randint(self.DWELL_TIME_MIN, self.DWELL_TIME_MAX)
-            self.logger.info(f"Dwelling {duration}s...")
+            self.logger.info(f"Dwelling {duration}s with periodic real clicks...")
             start = time.time()
+            last_click = 0
+
             while time.time() - start < duration:
-                time.sleep(random.uniform(5, 12))
-                if random.random() < 0.7:
+                time.sleep(random.uniform(3, 7))
+
+                # Scroll
+                try:
+                    self.client.driver.execute_script(
+                        f"window.scrollBy({{top: {random.randint(200, 600)}, behavior: 'smooth'}});"
+                    )
+                except Exception:
+                    pass
+
+                # Periodic real click every CLICK_DURING_DWELL_INTERVAL seconds
+                if time.time() - last_click > self.CLICK_DURING_DWELL_INTERVAL:
                     try:
-                        self.client.driver.execute_script(
-                            f"window.scrollBy({{top: {random.randint(200, 500)}, behavior: 'smooth'}});"
+                        containers = self.client.driver.find_elements(
+                            By.CSS_SELECTOR, 'div[id^="container-"]'
                         )
+                        for c in containers[:2]:
+                            try:
+                                if not c.is_displayed():
+                                    continue
+                                actions = ActionChains(self.client.driver)
+                                actions.move_to_element(c)
+                                actions.pause(random.uniform(0.1, 0.3))
+                                actions.click(c)
+                                actions.perform()
+                                self.ads_clicked += 1
+                                self.logger.info("Dwell real click on container")
+                                time.sleep(random.uniform(1.5, 3.0))
+                                self._close_extra_tabs()
+                                break
+                            except Exception:
+                                continue
                     except Exception:
                         pass
-                if random.random() < 0.3:
-                    try:
-                        self.client.driver.execute_script("""
-                            (() => {
-                                const ads = document.querySelectorAll(
-                                    'ins.adsbygoogle, div[id^="container-"], iframe[src*="highrevenueformat"]'
-                                );
-                                if (ads.length > 0) {
-                                    const ad = ads[Math.floor(Math.random() * ads.length)];
-                                    try { ad.click(); } catch(e) {}
-                                }
-                            })();
-                        """)
-                    except Exception:
-                        pass
+                    last_click = time.time()
+
             self.dwell_time = int(time.time() - start)
-        except Exception:
+        except Exception as e:
+            self.logger.debug(f"Dwell error: {e}")
             self.dwell_time = 90
 
+    # ============================================================
+    # PROXY
+    # ============================================================
     def _pick_proxy(self):
         if os.environ.get('DISABLE_PROXIES', 'false').lower() == 'true':
             return None
@@ -615,6 +672,9 @@ class BrowserStackSpider(scrapy.Spider):
             self._proxy_provider = BrowserProxyProvider()
         return self._proxy_provider.pick()
 
+    # ============================================================
+    # SESSION STARTERS
+    # ============================================================
     def _start_browserstack(self, proxy=None):
         username = os.environ.get('BROWSERSTACK_USERNAME', '').strip()
         access_key = os.environ.get('BROWSERSTACK_ACCESS_KEY', '').strip()
