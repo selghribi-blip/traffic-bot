@@ -449,13 +449,15 @@ class BrowserStackClient:
         (1440, 900), (1600, 900),
     ]
 
-    LOCALES = ['en-US', 'en-GB', 'fr-FR', 'de-DE', 'es-ES']
+    LOCALES = ['en-US', 'en-GB', 'fr-FR', 'de-DE', 'es-ES', 'ar-MA', 'fr-MA']
     TIMEZONES = {
         'en-US': 'America/New_York',
         'en-GB': 'Europe/London',
         'fr-FR': 'Europe/Paris',
         'de-DE': 'Europe/Berlin',
         'es-ES': 'Europe/Madrid',
+        'ar-MA': 'Africa/Casablanca',   # ← مغربي
+        'fr-MA': 'Africa/Casablanca',   # ← مغربي فرنسي
     }
 
     def __init__(self, username=None, access_key=None):
