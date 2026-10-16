@@ -1,5 +1,5 @@
 # utils/browserstack_client.py
-# BrowserStack + Local Chrome client with anti-detection
+# BrowserStack + Local Chrome client with Android mobile emulation
 import os
 import time
 import json
@@ -25,7 +25,61 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# Bezier Mouse Movement (human-like curves)
+# Android Device Profiles (Real device fingerprints)
+# ============================================================
+ANDROID_DEVICES = [
+    {
+        'name': 'Pixel 8',
+        'user_agent': 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+        'viewport': (412, 915),
+        'device_scale_factor': 2.625,
+        'platform': 'Linux armv8l',
+        'webgl_vendor': 'Google Inc. (ARM)',
+        'webgl_renderer': 'ANGLE (ARM, Mali-G715, OpenGL ES 3.2)',
+        'hardware_concurrency': 8,
+        'device_memory': 8,
+        'max_touch_points': 5,
+    },
+    {
+        'name': 'Samsung Galaxy S23',
+        'user_agent': 'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36',
+        'viewport': (360, 800),
+        'device_scale_factor': 3.0,
+        'platform': 'Linux armv8l',
+        'webgl_vendor': 'Google Inc. (Qualcomm)',
+        'webgl_renderer': 'ANGLE (Qualcomm, Adreno (TM) 740, OpenGL ES 3.2)',
+        'hardware_concurrency': 8,
+        'device_memory': 8,
+        'max_touch_points': 5,
+    },
+    {
+        'name': 'Xiaomi Redmi Note 12',
+        'user_agent': 'Mozilla/5.0 (Linux; Android 13; 22111317G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36',
+        'viewport': (393, 873),
+        'device_scale_factor': 2.75,
+        'platform': 'Linux armv8l',
+        'webgl_vendor': 'Google Inc. (Qualcomm)',
+        'webgl_renderer': 'ANGLE (Qualcomm, Adreno (TM) 610, OpenGL ES 3.2)',
+        'hardware_concurrency': 8,
+        'device_memory': 6,
+        'max_touch_points': 5,
+    },
+    {
+        'name': 'OnePlus 11',
+        'user_agent': 'Mozilla/5.0 (Linux; Android 13; CPH2449) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36',
+        'viewport': (412, 919),
+        'device_scale_factor': 3.0,
+        'platform': 'Linux armv8l',
+        'webgl_vendor': 'Google Inc. (Qualcomm)',
+        'webgl_renderer': 'ANGLE (Qualcomm, Adreno (TM) 740, OpenGL ES 3.2)',
+        'hardware_concurrency': 8,
+        'device_memory': 12,
+        'max_touch_points': 5,
+    },
+]
+
+# ============================================================
+# Bezier Mouse Movement
 # ============================================================
 class BezierMouse:
     @staticmethod
@@ -46,37 +100,64 @@ class BezierMouse:
 
 
 # ============================================================
-# CDP Fingerprint Spoofing
+# CDP Spoofer with Android Mobile Emulation
 # ============================================================
 class CDPSpoofer:
     @classmethod
     def apply(cls, driver, fp):
+        """Apply fingerprint with optional mobile emulation."""
         try:
+            # 1) Timezone
             if fp.get('timezone'):
                 driver.execute_cdp_cmd('Emulation.setTimezoneOverride', {
                     'timezoneId': fp['timezone'],
                 })
+
+            # 2) Locale
             if fp.get('locale'):
                 driver.execute_cdp_cmd('Emulation.setLocaleOverride', {
                     'locale': fp['locale'],
                 })
+
+            # 3) User Agent
             if fp.get('user_agent'):
                 driver.execute_cdp_cmd('Network.setUserAgentOverride', {
                     'userAgent': fp['user_agent'],
                     'platform': fp.get('platform', 'Win32'),
+                    'acceptLanguage': fp.get('locale', 'en-US'),
                 })
+
+            # 4) Viewport + Mobile Emulation
             if fp.get('viewport'):
                 vw, vh = fp['viewport']
+                is_mobile = fp.get('is_mobile', False)
                 driver.execute_cdp_cmd('Emulation.setDeviceMetricsOverride', {
-                    'width': vw, 'height': vh,
-                    'deviceScaleFactor': 1, 'mobile': False,
+                    'width': vw,
+                    'height': vh,
+                    'deviceScaleFactor': fp.get('device_scale_factor', 1),
+                    'mobile': is_mobile,
+                    'screenWidth': vw,
+                    'screenHeight': vh,
                 })
+
+            # 5) Touch Emulation (for mobile)
+            if fp.get('is_mobile'):
+                driver.execute_cdp_cmd('Emulation.setTouchEmulationEnabled', {
+                    'enabled': True,
+                    'maxTouchPoints': fp.get('max_touch_points', 5),
+                })
+
+            # 6) JavaScript injection for fingerprint spoofing
             driver.execute_cdp_cmd(
                 'Page.addScriptToEvaluateOnNewDocument',
                 {'source': cls._script(fp)},
             )
+
+            device_name = fp.get('device_name', 'Unknown')
+            logger.info(f"CDP spoofed: {device_name} | {fp.get('timezone')} | {fp.get('locale')}")
+
         except Exception as e:
-            logger.debug(f"CDP spoofing partial: {e}")
+            logger.warning(f"CDP spoofing partially failed: {e}")
 
     @staticmethod
     def _script(fp):
@@ -87,29 +168,57 @@ class CDPSpoofer:
         langs = fp.get('langs', ['en-US', 'en'])
         platform = fp.get('platform', 'Win32')
         vendor = fp.get('vendor', 'Google Inc.')
+        is_mobile = fp.get('is_mobile', False)
+        max_touch = fp.get('max_touch_points', 5) if is_mobile else 0
 
         return f"""
         (() => {{
+            // Hide webdriver
             Object.defineProperty(navigator, 'webdriver', {{get: () => undefined}});
+
+            // Platform & vendor
             Object.defineProperty(navigator, 'platform', {{get: () => '{platform}'}});
             Object.defineProperty(navigator, 'vendor', {{get: () => '{vendor}'}});
+
+            // Language
             Object.defineProperty(navigator, 'language', {{get: () => '{langs[0]}'}});
             Object.defineProperty(navigator, 'languages', {{get: () => {json.dumps(langs)}}});
+
+            // Hardware
             Object.defineProperty(navigator, 'hardwareConcurrency', {{get: () => {hw}}});
             Object.defineProperty(navigator, 'deviceMemory', {{get: () => {dm}}});
+
+            // Plugins
             Object.defineProperty(navigator, 'plugins', {{
                 get: () => [
-                    {{name: 'PDF Viewer'}},
-                    {{name: 'Chrome PDF Viewer'}},
-                    {{name: 'Chromium PDF Viewer'}},
+                    {{name: 'PDF Viewer', filename: 'internal-pdf-viewer'}},
+                    {{name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer'}},
+                    {{name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer'}},
                 ],
             }});
+
+            // Touch (mobile)
+            Object.defineProperty(navigator, 'maxTouchPoints', {{get: () => {max_touch}}});
+
+            // WebGL spoofing
             const getParameter = WebGLRenderingContext.prototype.getParameter;
             WebGLRenderingContext.prototype.getParameter = function(p) {{
                 if (p === 37445) return '{wv}';
                 if (p === 37446) return '{wr}';
                 return getParameter.call(this, p);
             }};
+
+            // WebGL2 spoofing
+            if (window.WebGL2RenderingContext) {{
+                const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
+                WebGL2RenderingContext.prototype.getParameter = function(p) {{
+                    if (p === 37445) return '{wv}';
+                    if (p === 37446) return '{wr}';
+                    return getParameter2.call(this, p);
+                }};
+            }}
+
+            // Canvas noise
             const toDataURL = HTMLCanvasElement.prototype.toDataURL;
             HTMLCanvasElement.prototype.toDataURL = function() {{
                 const ctx = this.getContext('2d');
@@ -124,13 +233,47 @@ class CDPSpoofer:
                 }}
                 return toDataURL.apply(this, arguments);
             }};
-            window.chrome = {{runtime: {{}}, loadTimes: function() {{}}, csi: function() {{}}}};
+
+            // Audio noise
+            if (window.AudioContext) {{
+                const origGetFloatFrequencyData = AnalyserNode.prototype.getFloatFrequencyData;
+                AnalyserNode.prototype.getFloatFrequencyData = function(array) {{
+                    origGetFloatFrequencyData.call(this, array);
+                    for (let i = 0; i < array.length; i++) {{
+                        array[i] += Math.random() * 0.0001;
+                    }}
+                }};
+            }}
+
+            // Chrome object
+            window.chrome = {{
+                runtime: {{}},
+                loadTimes: function() {{}},
+                csi: function() {{}},
+                app: {{}},
+            }};
+
+            // Permissions
             const origQuery = window.navigator.permissions.query;
             window.navigator.permissions.query = (p) => (
                 p.name === 'notifications'
                     ? Promise.resolve({{state: Notification.permission}})
                     : origQuery(p)
             );
+
+            // WebRTC leak prevention
+            if (window.RTCPeerConnection) {{
+                const origRTC = window.RTCPeerConnection;
+                window.RTCPeerConnection = function(...args) {{
+                    const pc = new origRTC(...args);
+                    const origCreateDataChannel = pc.createDataChannel;
+                    pc.createDataChannel = function(...args) {{
+                        return origCreateDataChannel.apply(pc, args);
+                    }};
+                    return pc;
+                }};
+                window.RTCPeerConnection.prototype = origRTC.prototype;
+            }}
         }})();
         """
 
@@ -215,10 +358,12 @@ class BrowserStackClient:
         'are you a robot',
     ]
 
-    VIEWPORTS = [
+    # Desktop viewports
+    DESKTOP_VIEWPORTS = [
         (1920, 1080), (1366, 768), (1536, 864),
         (1440, 900), (1600, 900),
     ]
+
     LOCALES = ['en-US', 'en-GB', 'fr-FR', 'de-DE', 'es-ES']
     TIMEZONES = {
         'en-US': 'America/New_York',
@@ -233,17 +378,66 @@ class BrowserStackClient:
         self.access_key = access_key or os.environ.get('BROWSERSTACK_ACCESS_KEY', '').strip()
         self.driver = None
         self.current_locale = 'en-US'
+        self.is_mobile = False
+
+    # ============================================================
+    # Random Fingerprint (Desktop or Mobile)
+    # ============================================================
+    def _random_fp(self, mobile=False):
+        """Generate a random fingerprint. Set mobile=True for Android."""
+        locale = random.choice(self.LOCALES)
+
+        if mobile:
+            # Mobile fingerprint (Android)
+            device = random.choice(ANDROID_DEVICES)
+            return {
+                'locale': locale,
+                'timezone': self.TIMEZONES[locale],
+                'platform': device['platform'],
+                'vendor': 'Google Inc.',
+                'user_agent': device['user_agent'],
+                'viewport': device['viewport'],
+                'device_scale_factor': device['device_scale_factor'],
+                'webgl_vendor': device['webgl_vendor'],
+                'webgl_renderer': device['webgl_renderer'],
+                'hardware_concurrency': device['hardware_concurrency'],
+                'device_memory': device['device_memory'],
+                'langs': [locale, locale.split('-')[0]],
+                'is_mobile': True,
+                'device_name': device['name'],
+                'max_touch_points': device['max_touch_points'],
+            }
+        else:
+            # Desktop fingerprint
+            return {
+                'locale': locale,
+                'timezone': self.TIMEZONES[locale],
+                'platform': 'Win32',
+                'vendor': 'Google Inc.',
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                'viewport': random.choice(self.DESKTOP_VIEWPORTS),
+                'device_scale_factor': 1,
+                'webgl_vendor': 'Google Inc. (NVIDIA)',
+                'webgl_renderer': 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0)',
+                'hardware_concurrency': random.choice([4, 8, 12, 16]),
+                'device_memory': random.choice([4, 8, 16]),
+                'langs': [locale, locale.split('-')[0]],
+                'is_mobile': False,
+                'device_name': 'Desktop',
+                'max_touch_points': 0,
+            }
 
     # ============================================================
     # BrowserStack Session
     # ============================================================
     def start_session(self, url, browser='chrome', os_name='Windows', os_version='11',
                       proxy=None, use_local=False, fp=None, record_video=False,
-                      block_resources='balanced'):
+                      block_resources='balanced', mobile=False):
         if not (self.username and self.access_key):
             raise RuntimeError("BrowserStack credentials missing")
 
-        fp = fp or self._random_fp()
+        fp = fp or self._random_fp(mobile=mobile)
+        self.is_mobile = fp.get('is_mobile', False)
 
         options = Options()
         options.set_capability('browserName', browser)
@@ -264,7 +458,7 @@ class BrowserStackClient:
 
         options.set_capability('bstack:options', bstack_opts)
 
-        logger.info(f"BrowserStack: {browser} on {os_name} {os_version}")
+        logger.info(f"BrowserStack: {browser} on {os_name} {os_version} | Device: {fp.get('device_name')}")
 
         self.driver = webdriver.Remote(
             command_executor='https://hub-cloud.browserstack.com/wd/hub',
@@ -290,7 +484,7 @@ class BrowserStackClient:
         return self.driver
 
     # ============================================================
-    # Common Actions
+    # Common Actions (unchanged from previous version)
     # ============================================================
     def click_ads(self, ad_selectors=None, max_clicks=2):
         selectors = ad_selectors or self.AD_SELECTORS
@@ -513,22 +707,6 @@ class BrowserStackClient:
         countries = ['+212', '+33', '+44', '+1', '+49']
         return f"{random.choice(countries)}{random.randint(600000000, 999999999)}"
 
-    def _random_fp(self):
-        locale = random.choice(self.LOCALES)
-        return {
-            'locale': locale,
-            'timezone': self.TIMEZONES[locale],
-            'platform': 'Win32',
-            'vendor': 'Google Inc.',
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-            'viewport': random.choice(self.VIEWPORTS),
-            'webgl_vendor': 'Google Inc. (NVIDIA)',
-            'webgl_renderer': 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0)',
-            'hardware_concurrency': random.choice([4, 8, 12, 16]),
-            'device_memory': random.choice([4, 8, 16]),
-            'langs': [locale, locale.split('-')[0]],
-        }
-
     def take_screenshot(self, filename=None):
         if not filename:
             filename = f"screenshot_{int(time.time())}.png"
@@ -549,21 +727,35 @@ class BrowserStackClient:
 
 
 # ============================================================
-# Local Browser Client
+# Local Browser Client (with Mobile Emulation)
 # ============================================================
 class LocalBrowserClient(BrowserStackClient):
-    """Local Chrome with anti-detection"""
+    """Local Chrome with anti-detection and mobile emulation support."""
 
     def __init__(self):
         super().__init__()
         self._profile_dir = None
 
     def start_session(self, url, headless=True, proxy=None, fp=None,
-                      block_resources='balanced'):
-        fp = fp or self._random_fp()
+                      block_resources='balanced', mobile=True):
+        fp = fp or self._random_fp(mobile=mobile)
+        self.is_mobile = fp.get('is_mobile', False)
+
         options = Options()
-        vw, vh = fp.get('viewport', (1920, 1080))
+        vw, vh = fp.get('viewport', (412, 915))
         locale = fp.get('locale', 'en-US')
+
+        # Use mobile emulation via experimental option (fallback)
+        if self.is_mobile:
+            options.add_experimental_option('mobileEmulation', {
+                'deviceMetrics': {
+                    'width': vw,
+                    'height': vh,
+                    'pixelRatio': fp.get('device_scale_factor', 3.0),
+                    'touch': True,
+                },
+                'userAgent': fp.get('user_agent'),
+            })
 
         if headless:
             options.add_argument('--headless=new')
@@ -579,14 +771,17 @@ class LocalBrowserClient(BrowserStackClient):
         options.add_argument('--disable-notifications')
         options.add_argument(f'--lang={locale}')
         options.add_argument('--log-level=3')
+        options.add_argument(f'--user-agent={fp.get("user_agent", "")}')
 
         # Try undetected-chromedriver first
+        driver = None
         try:
             import undetected_chromedriver as uc
             logger.info("Using undetected-chromedriver")
             driver = uc.Chrome(options=options, use_subprocess=True)
         except Exception as e:
             logger.warning(f"uc.Chrome failed: {e}. Using plain Chrome")
+
             chrome_bin = os.environ.get('CHROME_BIN', '/usr/local/bin/google-chrome')
             if os.path.exists(chrome_bin):
                 options.binary_location = chrome_bin
