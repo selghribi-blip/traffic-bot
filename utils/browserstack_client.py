@@ -1,11 +1,12 @@
 # utils/browserstack_client.py
-# BrowserStack + Local Chrome client with Android mobile emulation
+# BrowserStack + Local Chrome client with proxy auth + mobile emulation
 import os
 import time
 import json
 import random
 import logging
 import tempfile
+import zipfile
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# Android Device Profiles (Real device fingerprints)
+# Android Device Profiles
 # ============================================================
 ANDROID_DEVICES = [
     {
@@ -78,8 +79,123 @@ ANDROID_DEVICES = [
     },
 ]
 
+
 # ============================================================
-# Bezier Mouse Movement
+# Proxy Auth Extension Generator
+# ============================================================
+def parse_proxy_url(proxy_url):
+    """
+    Parses http://user:pass@host:port or socks5://user:pass@host:port
+    Returns dict {scheme, host, port, user, pass} or None.
+    """
+    if not proxy_url:
+        return None
+    try:
+        scheme = 'http'
+        url = proxy_url.strip()
+        if '://' in url:
+            scheme, url = url.split('://', 1)
+
+        user = pass_ = None
+        if '@' in url:
+            creds, url = url.rsplit('@', 1)
+            if ':' in creds:
+                user, pass_ = creds.split(':', 1)
+
+        if ':' in url:
+            host, port = url.rsplit(':', 1)
+        else:
+            return None
+
+        return {
+            'scheme': scheme,
+            'host': host,
+            'port': port,
+            'user': user,
+            'pass': pass_,
+        }
+    except Exception as e:
+        logger.error(f"Failed to parse proxy '{proxy_url}': {e}")
+        return None
+
+
+def create_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, scheme='http'):
+    """
+    Creates a Chrome extension zip that handles proxy authentication.
+    Returns path to the .zip file.
+    """
+    manifest_json = """
+    {
+        "version": "1.0.0",
+        "manifest_version": 2,
+        "name": "Chrome Proxy Auth",
+        "permissions": [
+            "proxy",
+            "tabs",
+            "unlimitedStorage",
+            "storage",
+            "<all_urls>",
+            "webRequest",
+            "webRequestBlocking"
+        ],
+        "background": {
+            "scripts": ["background.js"]
+        },
+        "minimum_chrome_version": "22.0.0"
+    }
+    """
+
+    background_js = """
+    var config = {
+        mode: "fixed_servers",
+        rules: {
+            singleProxy: {
+                scheme: "%s",
+                host: "%s",
+                port: parseInt(%s)
+            },
+            bypassList: ["localhost", "127.0.0.1"]
+        }
+    };
+
+    chrome.proxy.settings.set({value: config, scope: "regular"}, function() {});
+
+    function callbackFn(details) {
+        return {
+            authCredentials: {
+                username: "%s",
+                password: "%s"
+            }
+        };
+    }
+
+    chrome.webRequest.onAuthRequired.addListener(
+        callbackFn,
+        {urls: ["<all_urls>"]},
+        ['blocking']
+    );
+    """ % (scheme, proxy_host, proxy_port, proxy_user, proxy_pass)
+
+    ext_dir = tempfile.mkdtemp(prefix='proxy_auth_ext_')
+    manifest_path = os.path.join(ext_dir, 'manifest.json')
+    background_path = os.path.join(ext_dir, 'background.js')
+
+    with open(manifest_path, 'w') as f:
+        f.write(manifest_json)
+    with open(background_path, 'w') as f:
+        f.write(background_js)
+
+    zip_path = os.path.join(ext_dir, 'proxy_auth_plugin.zip')
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zp:
+        zp.write(manifest_path, 'manifest.json')
+        zp.write(background_path, 'background.js')
+
+    logger.info(f"Created proxy auth extension: {zip_path}")
+    return zip_path
+
+
+# ============================================================
+# Bezier Mouse
 # ============================================================
 class BezierMouse:
     @staticmethod
@@ -100,7 +216,7 @@ class BezierMouse:
 
 
 # ============================================================
-# CDP Spoofer with Android Mobile Emulation
+# CDP Spoofer
 # ============================================================
 class CDPSpoofer:
     @classmethod
@@ -140,14 +256,14 @@ class CDPSpoofer:
                     'screenHeight': vh,
                 })
 
-            # 5) Touch Emulation (for mobile)
+            # 5) Touch Emulation
             if fp.get('is_mobile'):
                 driver.execute_cdp_cmd('Emulation.setTouchEmulationEnabled', {
                     'enabled': True,
                     'maxTouchPoints': fp.get('max_touch_points', 5),
                 })
 
-            # 6) JavaScript injection for fingerprint spoofing
+            # 6) JS injection
             driver.execute_cdp_cmd(
                 'Page.addScriptToEvaluateOnNewDocument',
                 {'source': cls._script(fp)},
@@ -157,7 +273,7 @@ class CDPSpoofer:
             logger.info(f"CDP spoofed: {device_name} | {fp.get('timezone')} | {fp.get('locale')}")
 
         except Exception as e:
-            logger.warning(f"CDP spoofing partially failed: {e}")
+            logger.warning(f"CDP spoofing partial: {e}")
 
     @staticmethod
     def _script(fp):
@@ -173,22 +289,14 @@ class CDPSpoofer:
 
         return f"""
         (() => {{
-            // Hide webdriver
             Object.defineProperty(navigator, 'webdriver', {{get: () => undefined}});
-
-            // Platform & vendor
             Object.defineProperty(navigator, 'platform', {{get: () => '{platform}'}});
             Object.defineProperty(navigator, 'vendor', {{get: () => '{vendor}'}});
-
-            // Language
             Object.defineProperty(navigator, 'language', {{get: () => '{langs[0]}'}});
             Object.defineProperty(navigator, 'languages', {{get: () => {json.dumps(langs)}}});
-
-            // Hardware
             Object.defineProperty(navigator, 'hardwareConcurrency', {{get: () => {hw}}});
             Object.defineProperty(navigator, 'deviceMemory', {{get: () => {dm}}});
-
-            // Plugins
+            Object.defineProperty(navigator, 'maxTouchPoints', {{get: () => {max_touch}}});
             Object.defineProperty(navigator, 'plugins', {{
                 get: () => [
                     {{name: 'PDF Viewer', filename: 'internal-pdf-viewer'}},
@@ -196,19 +304,12 @@ class CDPSpoofer:
                     {{name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer'}},
                 ],
             }});
-
-            // Touch (mobile)
-            Object.defineProperty(navigator, 'maxTouchPoints', {{get: () => {max_touch}}});
-
-            // WebGL spoofing
             const getParameter = WebGLRenderingContext.prototype.getParameter;
             WebGLRenderingContext.prototype.getParameter = function(p) {{
                 if (p === 37445) return '{wv}';
                 if (p === 37446) return '{wr}';
                 return getParameter.call(this, p);
             }};
-
-            // WebGL2 spoofing
             if (window.WebGL2RenderingContext) {{
                 const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
                 WebGL2RenderingContext.prototype.getParameter = function(p) {{
@@ -217,8 +318,6 @@ class CDPSpoofer:
                     return getParameter2.call(this, p);
                 }};
             }}
-
-            // Canvas noise
             const toDataURL = HTMLCanvasElement.prototype.toDataURL;
             HTMLCanvasElement.prototype.toDataURL = function() {{
                 const ctx = this.getContext('2d');
@@ -233,8 +332,6 @@ class CDPSpoofer:
                 }}
                 return toDataURL.apply(this, arguments);
             }};
-
-            // Audio noise
             if (window.AudioContext) {{
                 const origGetFloatFrequencyData = AnalyserNode.prototype.getFloatFrequencyData;
                 AnalyserNode.prototype.getFloatFrequencyData = function(array) {{
@@ -244,24 +341,13 @@ class CDPSpoofer:
                     }}
                 }};
             }}
-
-            // Chrome object
-            window.chrome = {{
-                runtime: {{}},
-                loadTimes: function() {{}},
-                csi: function() {{}},
-                app: {{}},
-            }};
-
-            // Permissions
+            window.chrome = {{runtime: {{}}, loadTimes: function() {{}}, csi: function() {{}}, app: {{}}}};
             const origQuery = window.navigator.permissions.query;
             window.navigator.permissions.query = (p) => (
                 p.name === 'notifications'
                     ? Promise.resolve({{state: Notification.permission}})
                     : origQuery(p)
             );
-
-            // WebRTC leak prevention
             if (window.RTCPeerConnection) {{
                 const origRTC = window.RTCPeerConnection;
                 window.RTCPeerConnection = function(...args) {{
@@ -358,7 +444,6 @@ class BrowserStackClient:
         'are you a robot',
     ]
 
-    # Desktop viewports
     DESKTOP_VIEWPORTS = [
         (1920, 1080), (1366, 768), (1536, 864),
         (1440, 900), (1600, 900),
@@ -381,14 +466,12 @@ class BrowserStackClient:
         self.is_mobile = False
 
     # ============================================================
-    # Random Fingerprint (Desktop or Mobile)
+    # Random Fingerprint
     # ============================================================
     def _random_fp(self, mobile=False):
-        """Generate a random fingerprint. Set mobile=True for Android."""
         locale = random.choice(self.LOCALES)
 
         if mobile:
-            # Mobile fingerprint (Android)
             device = random.choice(ANDROID_DEVICES)
             return {
                 'locale': locale,
@@ -408,7 +491,6 @@ class BrowserStackClient:
                 'max_touch_points': device['max_touch_points'],
             }
         else:
-            # Desktop fingerprint
             return {
                 'locale': locale,
                 'timezone': self.TIMEZONES[locale],
@@ -458,7 +540,7 @@ class BrowserStackClient:
 
         options.set_capability('bstack:options', bstack_opts)
 
-        logger.info(f"BrowserStack: {browser} on {os_name} {os_version} | Device: {fp.get('device_name')}")
+        logger.info(f"BrowserStack: {browser} on {os_name} {os_version} | {fp.get('device_name')}")
 
         self.driver = webdriver.Remote(
             command_executor='https://hub-cloud.browserstack.com/wd/hub',
@@ -484,7 +566,7 @@ class BrowserStackClient:
         return self.driver
 
     # ============================================================
-    # Common Actions (unchanged from previous version)
+    # Common Actions
     # ============================================================
     def click_ads(self, ad_selectors=None, max_clicks=2):
         selectors = ad_selectors or self.AD_SELECTORS
@@ -727,14 +809,15 @@ class BrowserStackClient:
 
 
 # ============================================================
-# Local Browser Client (with Mobile Emulation)
+# Local Browser Client (with proxy auth + mobile emulation)
 # ============================================================
 class LocalBrowserClient(BrowserStackClient):
-    """Local Chrome with anti-detection and mobile emulation support."""
+    """Local Chrome with anti-detection, proxy auth, and mobile emulation."""
 
     def __init__(self):
         super().__init__()
         self._profile_dir = None
+        self._extension_path = None
 
     def start_session(self, url, headless=True, proxy=None, fp=None,
                       block_resources='balanced', mobile=True):
@@ -745,7 +828,7 @@ class LocalBrowserClient(BrowserStackClient):
         vw, vh = fp.get('viewport', (412, 915))
         locale = fp.get('locale', 'en-US')
 
-        # Use mobile emulation via experimental option (fallback)
+        # Mobile emulation
         if self.is_mobile:
             options.add_experimental_option('mobileEmulation', {
                 'deviceMetrics': {
@@ -773,7 +856,43 @@ class LocalBrowserClient(BrowserStackClient):
         options.add_argument('--log-level=3')
         options.add_argument(f'--user-agent={fp.get("user_agent", "")}')
 
-        # Try undetected-chromedriver first
+        # ============================================================
+        # PROXY HANDLING (with authentication)
+        # ============================================================
+        if proxy:
+            parsed = parse_proxy_url(proxy)
+            if parsed:
+                host = parsed['host']
+                port = parsed['port']
+                user = parsed['user']
+                pass_ = parsed['pass']
+                scheme = parsed['scheme']
+
+                if user and pass_:
+                    # Use Chrome Extension for authenticated proxy
+                    try:
+                        self._extension_path = create_proxy_auth_extension(
+                            proxy_host=host,
+                            proxy_port=port,
+                            proxy_user=user,
+                            proxy_pass=pass_,
+                            scheme=scheme,
+                        )
+                        options.add_extension(self._extension_path)
+                        logger.info(f"Proxy auth extension loaded: {scheme}://{host}:{port}")
+                    except Exception as e:
+                        logger.warning(f"Extension failed: {e}. Trying direct --proxy-server")
+                        options.add_argument(f'--proxy-server={scheme}://{host}:{port}')
+                else:
+                    # No credentials - direct proxy-server
+                    options.add_argument(f'--proxy-server={scheme}://{host}:{port}')
+                    logger.info(f"Proxy without auth: {scheme}://{host}:{port}")
+            else:
+                logger.warning(f"Could not parse proxy: {proxy}")
+
+        # ============================================================
+        # DRIVER CREATION
+        # ============================================================
         driver = None
         try:
             import undetected_chromedriver as uc
@@ -785,9 +904,6 @@ class LocalBrowserClient(BrowserStackClient):
             chrome_bin = os.environ.get('CHROME_BIN', '/usr/local/bin/google-chrome')
             if os.path.exists(chrome_bin):
                 options.binary_location = chrome_bin
-
-            if proxy:
-                options.add_argument(f'--proxy-server={proxy}')
 
             self._profile_dir = tempfile.mkdtemp(prefix='chrome_profile_')
             options.add_argument(f'--user-data-dir={self._profile_dir}')
@@ -820,6 +936,23 @@ class LocalBrowserClient(BrowserStackClient):
         self.current_locale = locale
         self.driver.set_page_load_timeout(60)
         self.driver.set_script_timeout(30)
+
+        # ============================================================
+        # PROXY VERIFICATION
+        # ============================================================
+        if proxy:
+            try:
+                self.driver.get('http://httpbin.org/ip')
+                time.sleep(2)
+                try:
+                    body = self.driver.find_element(By.TAG_NAME, 'body').text
+                    logger.info(f"Proxy check: {body[:200]}")
+                except Exception:
+                    logger.info("Proxy check: page loaded (couldn't read body)")
+            except Exception as e:
+                logger.warning(f"Proxy verification failed: {e}")
+
+        # Navigate to target URL
         self.driver.get(url)
         self.wait_for_page_load(timeout=30)
         return self.driver
