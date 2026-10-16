@@ -24,12 +24,12 @@ class BrowserProxyProvider:
 
     # Known residential hosts (add more as needed)
     RESIDENTIAL_HOSTS = [
-        'resi-ipv4-1.gw.tprx.io',   # TrueProxies
+       #'resi-ipv4-1.gw.tprx.io',   # TrueProxies
         'pr.oxylabs.io',              # Oxylabs
-        'residentialboson.quantumproxies.io',   # QuantumProxies ← جديد
-        'resi.',                      # generic residential prefix
-        'residential.',
-        'resi-',                      # generic residential
+       #'residentialboson.quantumproxies.io',   # QuantumProxies ← جديد
+       #'resi.',                      # generic residential prefix
+       #'residential.',
+       #'resi-',                      # generic residential
     ]
 
     def __init__(self, path='manual_proxies.txt'):
