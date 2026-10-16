@@ -828,11 +828,13 @@ class LocalBrowserClient(BrowserStackClient):
         vw, vh = fp.get('viewport', (412, 915))
         locale = fp.get('locale', 'en-US')
 
-        # Mobile emulation
-          # Mobile emulation: DON'T use add_experimental_option (breaks undetected-chromedriver)
-          # We rely on CDP spoofing (setDeviceMetricsOverride + setTouchEmulationEnabled) instead.
-          # CDP is applied AFTER driver is created, which works with uc.Chrome.
-
+        # ============================================================
+        # Mobile emulation:
+        # DON'T use add_experimental_option('mobileEmulation') —
+        # it breaks undetected-chromedriver.
+        # We rely on CDP spoofing (setDeviceMetricsOverride + setTouchEmulationEnabled)
+        # applied AFTER driver is created, which works with uc.Chrome.
+        # ============================================================
         if headless:
             options.add_argument('--headless=new')
 
