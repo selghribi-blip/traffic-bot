@@ -5,7 +5,7 @@
 # ============================================================
 
 # ---------- TrueProxies - Residential US (HTTP) ----------
-http://bhnuh6ce5ezl-country-us-city-new_york-rotate:9HptEK8hKpEmV7sx36Hv@resi-ipv4-1.gw.tprx.io:1080
+http://z7myfiqdu8em-country-ma-rotate:b2SJKrm7e4r174KrDsiJ@resi-ipv4-1.gw.tprx.io:1080
 
 # ---------- Oxylabs - Residential (HTTP) ----------
 http://customer-resi_dee21e30-sessid-0072328580-sesstime-10:E9V~Ywy_8hE3@pr.oxylabs.io:7777
